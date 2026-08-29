@@ -250,8 +250,7 @@ if report_type.startswith("Overdue Loan"):
 
     if gen_btn:
         pdf_rows = rg.filter_union_overdue(report_rows, start, end, selected_unions)
-        title_text = (f"Overdue Loan up to "
-                       f"{end.strftime('%d/%m/%Y')} — {', '.join(selected_unions)}")
+        title_text = (f"Overdue Loan up to {end.strftime('%d/%m/%Y')} — {', '.join(selected_unions)}")
 
         elif report_type.startswith("Expired"):
             before = st.date_input("Expired Loan List up to", value=date.today(), format="DD/MM/YYYY",
