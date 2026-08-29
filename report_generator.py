@@ -103,12 +103,180 @@ def _num(v):
 # ২. ফিল্টার + সর্ট ফাংশনসমূহ
 # =============================================================================
 def filter_overdue(rows, start_date, end_date):
-    """start_date <= overdue_date <= end_date -- oldest → newest sort।"""
+    """start_date <= overdue_date <= end_date (দুই পাশই inclusive) -- oldest → newest sort।"""
     out = [
         d for d in rows
         if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and start_date <= dt <= end_date
     ]
     out.sort(key=lambda d: parse_ddmmyyyy(d.get("overdue_date")))
+    return out
+
+
+def filter_union_overdue(rows, start_date, end_date, unions):
+    """filter_overdue()-এর ফলাফল থেকে শুধু দেওয়া Union(গুলো)-র রো।"""
+    union_set = {u.strip().lower() for u in unions if u and u.strip()}
+    base = filter_overdue(rows, start_date, end_date)
+    if not union_set:
+        return base
+    return [d for d in base if (d.get("union") or "").strip().lower() in union_set]
+
+
+def filter_expired(rows, before):
+    """overdue_date < before -- oldest → newest sort।"""
+    out = [d for d in rows if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt < before]
+    out.sort(key=lambda d: parse_ddmmyyyy(d.get("overdue_date")))
+    return out
+
+
+def filter_rescheduled(rows, after):
+    """overdue_date > after এবং Reschedule No. > 0 -- oldest → newest sort।"""
+    out = [
+        d for d in rows
+        if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > after and _num(d.get("reschedule_no")) > 0
+    ]
+    out.sort(key=lambda d: parse_ddmmyyyy(d.get("overdue_date")))
+    return out
+
+
+def group_by_union_village(rows):
+    """Union অনুযায়ী গ্রুপ (Union নাম অনুযায়ী sorted), প্রতি গ্রুপে Village অনুযায়ী sort,
+    এবং প্রতি গ্রুপের সাথে (loan_count, balance_total) সাবটোটাল।
+    রিটার্ন: [(union_name, [row, ...], {"count":.., "balance":..}), ...]"""
+    groups = defaultdict(list)
+    for d in rows:
+        union = (d.get("union") or "Unknown").strip() or "Unknown"
+        groups[union].append(d)
+
+    result = []
+    for union in sorted(groups.keys()):
+        group_rows = sorted(groups[union], key=lambda d: (d.get("village") or "").strip())
+        subtotal = {
+            "count": len(group_rows),
+            "balance": sum(_num(d.get("bal_total")) for d in group_rows),
+        }
+        result.append((union, group_rows, subtotal))
+    return result
+
+
+# =============================================================================
+# ৩. PDF জেনারেশন (A4 Landscape, প্রতি পেজে ব্যাংক-হেডার)
+# =============================================================================
+def _draw_header(canvas, doc, bank_name, branch_name, logo_path, title_text):
+    canvas.saveState()
+    page_w, page_h = landscape(A4)
+
+    if logo_path and os.path.exists(logo_path):
+        logo_size = 18 * mm
+        canvas.drawImage(
+            logo_path, (page_w - logo_size) / 2, page_h - 24 * mm,
+            width=logo_size, height=logo_size, mask="auto", preserveAspectRatio=True,
+        )
+
+    canvas.setFont(FONT_BOLD, 13)
+    canvas.drawCentredString(page_w / 2, page_h - 29 * mm, bank_name)
+
+    canvas.setFont(FONT_REGULAR, 10)
+    canvas.drawCentredString(page_w / 2, page_h - 34 * mm, f"Branch: {branch_name}")
+
+    canvas.setFont(FONT_BOLD, 11)
+    canvas.drawCentredString(page_w / 2, page_h - 39.5 * mm, title_text)
+
+    canvas.setLineWidth(0.5)
+    canvas.line(10 * mm, page_h - 41.5 * mm, page_w - 10 * mm, page_h - 41.5 * mm)
+
+    canvas.setFont(FONT_REGULAR, 7)
+    canvas.drawRightString(page_w - 10 * mm, 8 * mm, f"Page {doc.page}")
+    canvas.restoreState()
+
+
+def _fmt_cell(key, val):
+    if val is None or str(val).strip() in ("", "None"):
+        return ""
+    if key in _AMOUNT_KEYS:
+        try:
+            return f"{float(str(val).replace(',', '')):,.0f}"
+        except (TypeError, ValueError):
+            return str(val)
+    if key == "needs_review":
+        return "Yes" if val in (True, "হ্যাঁ", "Yes", 1) else ""
+    return str(val)
+
+
+def _build_table(data_rows, page_w, cell_style, header_style):
+    table_data = [[Paragraph(h, header_style) for _, h in COLUMNS]]
+    for d in data_rows:
+        table_data.append([Paragraph(_fmt_cell(k, d.get(k)), cell_style) for k, _ in COLUMNS])
+
+    avail_width = page_w - 16 * mm
+    col_widths = [avail_width / len(COLUMNS)] * len(COLUMNS)
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9E1F2")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F7FB")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return t
+
+
+def generate_report_pdf(rows, out_path, branch_name, title_text,
+                         bank_name=BANK_NAME_DEFAULT, logo_path=None, grouped=False):
+    """
+    rows:
+        grouped=False হলে -- filter_* ফাংশনের রেজাল্ট (flat list of dict)
+        grouped=True হলে  -- group_by_union_village()-এর রেজাল্ট
+    """
+    page_w, page_h = landscape(A4)
+    default_logo = os.path.join(os.path.dirname(__file__), "logo.png")
+    if logo_path is None and os.path.exists(default_logo):
+        logo_path = default_logo
+
+    doc = SimpleDocTemplate(
+        out_path, pagesize=landscape(A4),
+        leftMargin=8 * mm, rightMargin=8 * mm,
+        topMargin=45 * mm, bottomMargin=12 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    cell_style = ParagraphStyle("cell", parent=styles["Normal"], fontSize=6.5, leading=8,
+                                 fontName=FONT_REGULAR)
+    header_style = ParagraphStyle(
+        "hdr", parent=styles["Normal"], fontSize=7, leading=8,
+        alignment=TA_CENTER, fontName=FONT_BOLD,
+    )
+    union_style = ParagraphStyle(
+        "union", parent=styles["Heading4"], fontSize=11, spaceBefore=4, spaceAfter=3,
+        fontName=FONT_BOLD,
+    )
+    subtotal_style = ParagraphStyle(
+        "subtotal", parent=styles["Normal"], fontSize=9, fontName=FONT_BOLD, spaceAfter=8,
+    )
+    normal_style = ParagraphStyle("normal_txt", parent=styles["Normal"], fontName=FONT_REGULAR)
+
+    elements = []
+    if not grouped:
+        if not rows:
+            elements.append(Paragraph("No rows found for this filter.", normal_style))
+        else:
+            elements.append(_build_table(rows, page_w, cell_style, header_style))
+    else:
+        if not rows:
+            elements.append(Paragraph("No data found.", normal_style))
+        for union, group_rows, subtotal in rows:
+            elements.append(Paragraph(f"Union: {union}", union_style))
+            elements.append(_build_table(group_rows, page_w, cell_style, header_style))
+            elements.append(Paragraph(
+                f"Total Loans: {subtotal['count']} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"Total Balance: {subtotal['balance']:,.0f}",
+                subtotal_style,
+            ))
+            elements.append(Spacer(1, 6))
+
+    header_fn = lambda c, d: _draw_header(c, d, bank_name, branch_name, logo_path, title_text)
+    doc.build(elements, onFirstPage=header_fn, onLaterPages=header_fn)
+    return out_path
     return out
 
 def filter_union_overdue(rows, start_date, end_date, unions):
