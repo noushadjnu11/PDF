@@ -102,17 +102,19 @@ def _num(v):
 # =============================================================================
 # ২. ফিল্টার + সর্ট ফাংশনসমূহ
 # =============================================================================
-def filter_overdue(rows, up_to):
-    """overdue_date <= up_to -- oldest → newest sort।"""
-    out = [d for d in rows if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt <= up_to]
+def filter_overdue(rows, start_date, end_date):
+    """start_date <= overdue_date <= end_date -- oldest → newest sort।"""
+    out = [
+        d for d in rows
+        if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and start_date <= dt <= end_date
+    ]
     out.sort(key=lambda d: parse_ddmmyyyy(d.get("overdue_date")))
     return out
 
-
-def filter_union_overdue(rows, up_to, unions):
+def filter_union_overdue(rows, start_date, end_date, unions):
     """filter_overdue()-এর ফলাফল থেকে শুধু দেওয়া Union(গুলো)-র রো।"""
     union_set = {u.strip().lower() for u in unions if u and u.strip()}
-    base = filter_overdue(rows, up_to)
+    base = filter_overdue(rows, start_date, end_date)
     if not union_set:
         return base
     return [d for d in base if (d.get("union") or "").strip().lower() in union_set]
