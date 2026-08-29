@@ -121,19 +121,20 @@ def filter_union_overdue(rows, start_date, end_date, unions):
 
 
 def filter_expired(rows, before):
-    """overdue_date < before -- oldest → newest sort।"""
+    """overdue_date < before -- Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
     out = [d for d in rows if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt < before]
-    out.sort(key=lambda d: parse_ddmmyyyy(d.get("overdue_date")))
+    out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
 def filter_rescheduled(rows, after):
-    """overdue_date > after এবং Reschedule No. > 0 -- oldest → newest sort।"""
+    """overdue_date > after এবং Reschedule No. > 0 -- Union অনুযায়ী সাজানো,
+    প্রতি Union-এর ভেতরে oldest → newest।"""
     out = [
         d for d in rows
         if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > after and _num(d.get("reschedule_no")) > 0
     ]
-    out.sort(key=lambda d: parse_ddmmyyyy(d.get("overdue_date")))
+    out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
@@ -219,6 +220,7 @@ def _fmt_cell(key, val):
             return f"{float(str(val).replace(',', '')):,.0f}"
         except (TypeError, ValueError):
             return str(val)
+    return str(val)
 
 
 def _build_table(data_rows, page_w, cell_style, header_style):
