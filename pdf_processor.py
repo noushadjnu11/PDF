@@ -195,7 +195,7 @@ def repair_loan_balance_row(merged_text):
         "loan_case": case,
         "customer_name": clean(name),
         "phone": phone,
-        "overdue_date": sdate,
+        "overdue_date": edate,
         "bal_principal": tokens[-3],
         "bal_interest": tokens[-2],
         "bal_total": tokens[-1],
