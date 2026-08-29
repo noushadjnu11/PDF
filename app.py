@@ -218,39 +218,40 @@ if report_xlsx_path:
         pdf_rows = None
         grouped = False
         title_text = ""
-if report_type.startswith("Overdue Loan"):
-    col1, col2 = st.columns(2)
-    start = col1.date_input("শুরুর তারিখ", value=date(2026, 1, 1), format="DD/MM/YYYY")
-    end = col2.date_input("শেষের তারিখ", value=date(2026, 6, 30), format="DD/MM/YYYY")
+        if report_type.startswith("Overdue Loan"):
+            col1, col2 = st.columns(2)
+            start = col1.date_input("শুরুর তারিখ", value=date(2026, 1, 1), format="DD/MM/YYYY")
+            end = col2.date_input("শেষের তারিখ", value=date(2026, 6, 30), format="DD/MM/YYYY")
 
-    if start > end:
-        st.error("শুরুর তারিখ শেষের তারিখের পরে হতে পারবে না।")
-        gen_btn = False
-    else:
-        gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_overdue")
+            if start > end:
+                st.error("শুরুর তারিখ শেষের তারিখের পরে হতে পারবে না।")
+                gen_btn = False
+            else:
+                gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_overdue")
 
-    if gen_btn:
-        pdf_rows = rg.filter_overdue(report_rows, start, end)
-        title_text = f"Overdue Loan up to {end.strftime('%d/%m/%Y')}"
+            if gen_btn:
+                pdf_rows = rg.filter_overdue(report_rows, start, end)
+                title_text = f"Overdue Loan from {start.strftime('%d/%m/%Y')} to {end.strftime('%d/%m/%Y')}"
 
         elif report_type.startswith("Union-wise"):
-    col1, col2 = st.columns(2)
-    start = col1.date_input("শুরুর তারিখ", value=date(2026, 1, 1), format="DD/MM/YYYY",
-                             key="union_start")
-    end = col2.date_input("শেষের তারিখ", value=date(2026, 6, 30), format="DD/MM/YYYY",
-                           key="union_end")
-    selected_unions = st.multiselect("Union বেছে নিন (এক বা একাধিক)", all_unions)
+            col1, col2 = st.columns(2)
+            start = col1.date_input("শুরুর তারিখ", value=date(2026, 1, 1), format="DD/MM/YYYY",
+                                     key="union_start")
+            end = col2.date_input("শেষের তারিখ", value=date(2026, 6, 30), format="DD/MM/YYYY",
+                                   key="union_end")
+            selected_unions = st.multiselect("Union বেছে নিন (এক বা একাধিক)", all_unions)
 
-    if start > end:
-        st.error("শুরুর তারিখ শেষের তারিখের পরে হতে পারবে না।")
-        gen_btn = False
-    else:
-        gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_union_overdue",
-                             disabled=not selected_unions)
+            if start > end:
+                st.error("শুরুর তারিখ শেষের তারিখের পরে হতে পারবে না।")
+                gen_btn = False
+            else:
+                gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_union_overdue",
+                                     disabled=not selected_unions)
 
-    if gen_btn:
-        pdf_rows = rg.filter_union_overdue(report_rows, start, end, selected_unions)
-        title_text = (f"Overdue Loan up to {end.strftime('%d/%m/%Y')} — {', '.join(selected_unions)}")
+            if gen_btn:
+                pdf_rows = rg.filter_union_overdue(report_rows, start, end, selected_unions)
+                title_text = (f"Overdue Loan from {start.strftime('%d/%m/%Y')} to "
+                               f"{end.strftime('%d/%m/%Y')} — {', '.join(selected_unions)}")
 
         elif report_type.startswith("Expired"):
             before = st.date_input("Expired Loan List up to", value=date.today(), format="DD/MM/YYYY",
