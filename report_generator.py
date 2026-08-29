@@ -236,6 +236,7 @@ def _build_table(data_rows, page_w, cell_style, header_style):
     t = Table(table_data, colWidths=col_widths, repeatRows=1)
     t.setStyle(TableStyle([
     ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
     ("LINEBELOW", (0, 0), (-1, 0), 1, colors.black),   # হেডারের নিচে মোটা কালো লাইন
     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),  # খাঁটি ধূসর, কোনো রঙ না
