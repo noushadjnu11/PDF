@@ -47,8 +47,7 @@ COLUMNS = [
     ("bal_total", "Balance Total"),
     ("due_amount", "Due Amount"),
     ("reschedule_no", "Reschedule No."),
-    ("needs_review", "Needs Review?"),
-    ("review_note", "Note"),
+    ("blank_col", "Comment"),
 ]
 
 _AMOUNT_KEYS = {"installment", "bal_principal", "bal_interest", "bal_total", "due_amount"}
@@ -165,18 +164,42 @@ def _draw_header(canvas, doc, bank_name, branch_name, logo_path, title_text):
     canvas.saveState()
     page_w, page_h = landscape(A4)
 
+    subtitle = "A State Owned Financial Institution"
+    branch_line = f"{branch_name}"
+
+    # প্রতিটা লাইনের ফন্ট+সাইজ যা বসবে, সেই অনুযায়ী প্রস্থ মাপা
+    bank_font, bank_size = FONT_BOLD, 13
+    sub_font, sub_size = FONT_REGULAR, 8
+    branch_font, branch_size = FONT_REGULAR, 9
+
+    widths = [
+        canvas.stringWidth(bank_name, bank_font, bank_size),
+        canvas.stringWidth(subtitle, sub_font, sub_size),
+        canvas.stringWidth(branch_line, branch_font, branch_size),
+    ]
+    max_text_width = max(widths)
+    text_left_edge = page_w / 2 - max_text_width / 2   # সবচেয়ে চওড়া লাইনের বাম-প্রান্ত
+
+    # লোগো এই বাম-প্রান্তের ঠিক গা ঘেঁষে, বাম দিকে
+    logo_size = 16 * mm
+    gap = 3 * mm
+    logo_x = text_left_edge - gap - logo_size
+
     if logo_path and os.path.exists(logo_path):
-        logo_size = 18 * mm
         canvas.drawImage(
-            logo_path, (page_w - logo_size) / 2, page_h - 24 * mm,
+            logo_path, logo_x, page_h - 26 * mm,
             width=logo_size, height=logo_size, mask="auto", preserveAspectRatio=True,
         )
 
-    canvas.setFont(FONT_BOLD, 13)
-    canvas.drawCentredString(page_w / 2, page_h - 29 * mm, bank_name)
+    # টেক্সট আগের মতোই পেজ-সেন্টার বরাবর
+    canvas.setFont(bank_font, bank_size)
+    canvas.drawCentredString(page_w / 2, page_h - 20 * mm, bank_name)
 
-    canvas.setFont(FONT_REGULAR, 10)
-    canvas.drawCentredString(page_w / 2, page_h - 34 * mm, f"Branch: {branch_name}")
+    canvas.setFont(sub_font, sub_size)
+    canvas.drawCentredString(page_w / 2, page_h - 25 * mm, subtitle)
+
+    canvas.setFont(branch_font, branch_size)
+    canvas.drawCentredString(page_w / 2, page_h - 30 * mm, branch_line)
 
     canvas.setFont(FONT_BOLD, 11)
     canvas.drawCentredString(page_w / 2, page_h - 39.5 * mm, title_text)
@@ -188,7 +211,6 @@ def _draw_header(canvas, doc, bank_name, branch_name, logo_path, title_text):
     canvas.drawRightString(page_w - 10 * mm, 8 * mm, f"Page {doc.page}")
     canvas.restoreState()
 
-
 def _fmt_cell(key, val):
     if val is None or str(val).strip() in ("", "None"):
         return ""
@@ -197,9 +219,6 @@ def _fmt_cell(key, val):
             return f"{float(str(val).replace(',', '')):,.0f}"
         except (TypeError, ValueError):
             return str(val)
-    if key == "needs_review":
-        return "Yes" if val in (True, "হ্যাঁ", "Yes", 1) else ""
-    return str(val)
 
 
 def _build_table(data_rows, page_w, cell_style, header_style):
