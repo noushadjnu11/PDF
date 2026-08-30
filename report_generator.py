@@ -47,7 +47,7 @@ COLUMNS = [
     ("bal_interest", "Interest"),
     ("bal_total", "Balance"),
     ("due_amount", "Due"),
-    ("reschedule_no", "Resch."),
+    ("reschedule_no", "Res."),
     ("blank_col", "Comment"),
 ]
 
@@ -63,13 +63,13 @@ _COLUMN_WEIGHTS = {
     "union": 1.0,
     "phone": 1.15,
     "overdue_date": 0.85,
-    "installment": 0.85,
+    "installment": 0.95,
     "bal_principal": 0.8,
     "bal_interest": 0.7,
     "bal_total": 0.8,
     "due_amount": 0.65,
     "reschedule_no": 0.55,
-    "blank_col": 0.9,
+    "blank_col": 0.8,
 }
 
 
