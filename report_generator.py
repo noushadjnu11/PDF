@@ -15,6 +15,7 @@ merged_loan_report.xlsx থেকে বিভিন্ন ধরনের A4-La
 প্রতিটা PDF-এর প্রতি পেজেই উপরে ব্যাংকের লোগো + নাম + শাখা + রিপোর্ট-টাইটেল থাকে।
 """
 import os
+import re
 from collections import defaultdict
 from datetime import date, datetime
 
@@ -41,16 +42,35 @@ COLUMNS = [
     ("union", "Union"),
     ("phone", "Phone"),
     ("overdue_date", "Overdue Date"),
-    ("installment", "Installment"),
-    ("bal_principal", "Principal"),
+    ("installment", "Instl."),
+    ("bal_principal", "Princ."),
     ("bal_interest", "Interest"),
-    ("bal_total", "Balance Total"),
-    ("due_amount", "Due Amount"),
-    ("reschedule_no", "Reschedule No."),
+    ("bal_total", "Bal. Total"),
+    ("due_amount", "Due Amt"),
+    ("reschedule_no", "Resch. No"),
     ("blank_col", "Comment"),
 ]
 
 _AMOUNT_KEYS = {"installment", "bal_principal", "bal_interest", "bal_total", "due_amount"}
+
+# কলামগুলোর আপেক্ষিক প্রস্থ -- সংখ্যা/তারিখ কলাম সরু, নাম/ঠিকানা কলাম চওড়া
+_COLUMN_WEIGHTS = {
+    "prefixed_loan_case": 1.0,
+    "borrower": 1.3,
+    "father": 1.3,
+    "spouse": 1.3,
+    "village": 1.0,
+    "union": 1.0,
+    "phone": 1.15,
+    "overdue_date": 0.75,
+    "installment": 0.85,
+    "bal_principal": 0.7,
+    "bal_interest": 0.7,
+    "bal_total": 0.8,
+    "due_amount": 0.65,
+    "reschedule_no": 0.55,
+    "blank_col": 0.9,
+}
 
 
 # =============================================================================
@@ -120,28 +140,50 @@ def filter_union_overdue(rows, start_date, end_date, unions):
     return [d for d in base if (d.get("union") or "").strip().lower() in union_set]
 
 
-def filter_expired(rows, before):
-    """overdue_date < before -- Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
+def _apply_union_filter(rows, unions):
+    """unions দেওয়া থাকলে শুধু সেই Union(গুলো)-র রো রাখে; না থাকলে সব রো ফেরত দেয়।"""
+    union_set = {u.strip().lower() for u in (unions or []) if u and u.strip()}
+    if not union_set:
+        return rows
+    return [d for d in rows if (d.get("union") or "").strip().lower() in union_set]
+
+
+def filter_expired(rows, before, unions=None):
+    """overdue_date < before -- ঐচ্ছিক Union filter সহ -- Union অনুযায়ী সাজানো,
+    প্রতি Union-এর ভেতরে oldest → newest।"""
     out = [d for d in rows if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt < before]
+    out = _apply_union_filter(out, unions)
     out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
-def filter_rescheduled(rows, after):
-    """overdue_date > after এবং Reschedule No. > 0 -- Union অনুযায়ী সাজানো,
-    প্রতি Union-এর ভেতরে oldest → newest।"""
+def filter_rescheduled(rows, after, unions=None):
+    """overdue_date > after এবং Reschedule No. > 0 -- ঐচ্ছিক Union filter সহ --
+    Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
     out = [
         d for d in rows
         if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > after and _num(d.get("reschedule_no")) > 0
     ]
+    out = _apply_union_filter(out, unions)
     out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
-def group_by_union_village(rows):
+def filter_due_amount(rows, unions=None):
+    """যেসব রো-তে Due Amount উপলব্ধ (> 0), শুধু সেগুলো -- ঐচ্ছিক Union filter সহ --
+    Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
+    out = [d for d in rows if _num(d.get("due_amount")) > 0]
+    out = _apply_union_filter(out, unions)
+    out.sort(key=lambda d: ((d.get("union") or "").strip().lower(),
+                             parse_ddmmyyyy(d.get("overdue_date")) or date.min))
+    return out
+
+
+def group_by_union_village(rows, unions=None):
     """Union অনুযায়ী গ্রুপ (Union নাম অনুযায়ী sorted), প্রতি গ্রুপে Village অনুযায়ী sort,
-    এবং প্রতি গ্রুপের সাথে (loan_count, balance_total) সাবটোটাল।
+    এবং প্রতি গ্রুপের সাথে (loan_count, balance_total) সাবটোটাল। ঐচ্ছিক Union filter সহ।
     রিটার্ন: [(union_name, [row, ...], {"count":.., "balance":..}), ...]"""
+    rows = _apply_union_filter(rows, unions)
     groups = defaultdict(list)
     for d in rows:
         union = (d.get("union") or "Unknown").strip() or "Unknown"
@@ -156,6 +198,26 @@ def group_by_union_village(rows):
         }
         result.append((union, group_rows, subtotal))
     return result
+
+
+def build_output_filename(report_key, unions=None, start=None, end=None, single_date=None):
+    """PDF ফাইলের নাম dynamic ভাবে বানায়, যেমন:
+    Overdue_Joynagar_15-03-2025_to_30-06-2026.pdf
+    Expired_AllUnion_29-08-2026.pdf
+    """
+    def _clean(s):
+        return re.sub(r"[^A-Za-z0-9]+", "", s) or "Union"
+
+    parts = [report_key]
+    if unions:
+        parts.append("-".join(_clean(u) for u in unions))
+    else:
+        parts.append("AllUnion")
+    if start and end:
+        parts.append(f"{start.strftime('%d-%m-%Y')}_to_{end.strftime('%d-%m-%Y')}")
+    elif single_date:
+        parts.append(single_date.strftime("%d-%m-%Y"))
+    return "_".join(parts) + ".pdf"
 
 
 # =============================================================================
@@ -232,7 +294,8 @@ def _build_table(data_rows, page_w, cell_style, header_style):
         table_data.append([Paragraph(_fmt_cell(k, d.get(k)), cell_style) for k, _ in COLUMNS])
 
     avail_width = page_w - 16 * mm
-    col_widths = [avail_width / len(COLUMNS)] * len(COLUMNS)
+    total_weight = sum(_COLUMN_WEIGHTS.get(k, 1.0) for k, _ in COLUMNS)
+    col_widths = [avail_width * _COLUMN_WEIGHTS.get(k, 1.0) / total_weight for k, _ in COLUMNS]
     t = Table(table_data, colWidths=col_widths, repeatRows=1)
     t.setStyle(TableStyle([
     ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
@@ -247,11 +310,14 @@ def _build_table(data_rows, page_w, cell_style, header_style):
 
 
 def generate_report_pdf(rows, out_path, branch_name, title_text,
-                         bank_name=BANK_NAME_DEFAULT, logo_path=None, grouped=False):
+                         bank_name=BANK_NAME_DEFAULT, logo_path=None, grouped=False, summary=None):
     """
     rows:
         grouped=False হলে -- filter_* ফাংশনের রেজাল্ট (flat list of dict)
         grouped=True হলে  -- group_by_union_village()-এর রেজাল্ট
+    summary: {"label": "Balance"/"Due Amount", "count": int, "value": float} দিলে
+        রিপোর্টের একদম নিচে "Total Loans: N | Total <label>: X" লাইন বসবে
+        (grouped=True হলে প্রতি Union-এর সাবটোটালের নিচে, সব গ্রুপ শেষে গ্র্যান্ড-টোটাল হিসেবে)।
     """
     page_w, page_h = landscape(A4)
     default_logo = os.path.join(os.path.dirname(__file__), "logo.png")
@@ -286,6 +352,13 @@ def generate_report_pdf(rows, out_path, branch_name, title_text,
             elements.append(Paragraph("No rows found for this filter.", normal_style))
         else:
             elements.append(_build_table(rows, page_w, cell_style, header_style))
+            if summary is not None:
+                elements.append(Spacer(1, 6))
+                elements.append(Paragraph(
+                    f"Total Loans: {summary['count']} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                    f"Total {summary['label']}: {summary['value']:,.0f}",
+                    subtotal_style,
+                ))
     else:
         if not rows:
             elements.append(Paragraph("No data found.", normal_style))
@@ -298,6 +371,12 @@ def generate_report_pdf(rows, out_path, branch_name, title_text,
                 subtotal_style,
             ))
             elements.append(Spacer(1, 6))
+        if summary is not None and rows:
+            elements.append(Paragraph(
+                f"Grand Total Loans: {summary['count']} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"Grand Total {summary['label']}: {summary['value']:,.0f}",
+                subtotal_style,
+            ))
 
     header_fn = lambda c, d: _draw_header(c, d, bank_name, branch_name, logo_path, title_text)
     doc.build(elements, onFirstPage=header_fn, onLaterPages=header_fn)

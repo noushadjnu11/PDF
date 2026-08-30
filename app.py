@@ -209,6 +209,7 @@ if report_xlsx_path:
                 "Expired Loan List (নির্দিষ্ট তারিখের আগের সব)",
                 "Rescheduled Loan (নির্দিষ্ট তারিখের পরের + Reschedule No. > 0)",
                 "Union/Village সাজানো + সাবটোটাল রিপোর্ট",
+                "Due Amount Report (যেসব রো-তে Due Amount আছে)",
             ],
         )
 
@@ -218,6 +219,9 @@ if report_xlsx_path:
         pdf_rows = None
         grouped = False
         title_text = ""
+        summary = None
+        out_filename = "loan_report.pdf"
+
         if report_type.startswith("Overdue Loan"):
             col1, col2 = st.columns(2)
             start = col1.date_input("শুরুর তারিখ", value=date(2026, 1, 1), format="DD/MM/YYYY")
@@ -232,6 +236,7 @@ if report_xlsx_path:
             if gen_btn:
                 pdf_rows = rg.filter_overdue(report_rows, start, end)
                 title_text = f"Overdue Loan from {start.strftime('%d/%m/%Y')} to {end.strftime('%d/%m/%Y')}"
+                out_filename = rg.build_output_filename("Overdue", start=start, end=end)
 
         elif report_type.startswith("Union-wise"):
             col1, col2 = st.columns(2)
@@ -252,38 +257,84 @@ if report_xlsx_path:
                 pdf_rows = rg.filter_union_overdue(report_rows, start, end, selected_unions)
                 title_text = (f"Overdue Loan from {start.strftime('%d/%m/%Y')} to "
                                f"{end.strftime('%d/%m/%Y')} — {', '.join(selected_unions)}")
+                out_filename = rg.build_output_filename("UnionOverdue", unions=selected_unions,
+                                                          start=start, end=end)
 
         elif report_type.startswith("Expired"):
             before = st.date_input("Expired Loan List up to", value=date.today(), format="DD/MM/YYYY",
                                     key="expired_date")
+            expired_unions = st.multiselect("Union বেছে নিন (ঐচ্ছিক — খালি রাখলে সব Union দেখাবে)",
+                                             all_unions, key="expired_unions")
             gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_expired")
             if gen_btn:
-                pdf_rows = rg.filter_expired(report_rows, before)
+                pdf_rows = rg.filter_expired(report_rows, before, expired_unions or None)
                 title_text = f"Expired Loan List up to {before.strftime('%d/%m/%Y')}"
+                if expired_unions:
+                    title_text += f" — {', '.join(expired_unions)}"
+                summary = {
+                    "label": "Balance",
+                    "count": len(pdf_rows),
+                    "value": sum(rg._num(d.get("bal_total")) for d in pdf_rows),
+                }
+                out_filename = rg.build_output_filename("Expired", unions=expired_unions, single_date=before)
 
         elif report_type.startswith("Rescheduled"):
             after = st.date_input("Rescheduled Loan up to", value=date.today(), format="DD/MM/YYYY",
                                    key="resch_date")
+            resch_unions = st.multiselect("Union বেছে নিন (ঐচ্ছিক — খালি রাখলে সব Union দেখাবে)",
+                                           all_unions, key="resch_unions")
             gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_resch")
             if gen_btn:
-                pdf_rows = rg.filter_rescheduled(report_rows, after)
+                pdf_rows = rg.filter_rescheduled(report_rows, after, resch_unions or None)
                 title_text = f"Rescheduled Loan up to {after.strftime('%d/%m/%Y')}"
+                if resch_unions:
+                    title_text += f" — {', '.join(resch_unions)}"
+                summary = {
+                    "label": "Balance",
+                    "count": len(pdf_rows),
+                    "value": sum(rg._num(d.get("bal_total")) for d in pdf_rows),
+                }
+                out_filename = rg.build_output_filename("Rescheduled", unions=resch_unions, single_date=after)
 
-        else:  # Union/Village গ্রুপড রিপোর্ট
+        elif report_type.startswith("Union/Village"):
+            grouped_unions = st.multiselect("Union বেছে নিন (ঐচ্ছিক — খালি রাখলে সব Union দেখাবে)",
+                                             all_unions, key="grouped_unions")
             gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_grouped")
             if gen_btn:
-                pdf_rows = rg.group_by_union_village(report_rows)
+                pdf_rows = rg.group_by_union_village(report_rows, grouped_unions or None)
                 title_text = "Union / Village Wise Loan Report"
+                if grouped_unions:
+                    title_text += f" — {', '.join(grouped_unions)}"
                 grouped = True
+                total_count = sum(g[2]["count"] for g in pdf_rows)
+                total_balance = sum(g[2]["balance"] for g in pdf_rows)
+                summary = {"label": "Balance", "count": total_count, "value": total_balance}
+                out_filename = rg.build_output_filename("UnionVillage", unions=grouped_unions)
+
+        else:  # Due Amount Report
+            due_unions = st.multiselect("Union বেছে নিন (ঐচ্ছিক — খালি রাখলে সব Union দেখাবে)",
+                                         all_unions, key="due_unions")
+            gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_due")
+            if gen_btn:
+                pdf_rows = rg.filter_due_amount(report_rows, due_unions or None)
+                title_text = "Due Amount Report"
+                if due_unions:
+                    title_text += f" — {', '.join(due_unions)}"
+                summary = {
+                    "label": "Due Amount",
+                    "count": len(pdf_rows),
+                    "value": sum(rg._num(d.get("due_amount")) for d in pdf_rows),
+                }
+                out_filename = rg.build_output_filename("DueAmount", unions=due_unions)
 
         if gen_btn and pdf_rows is not None:
             if not branch_name.strip():
                 st.warning("ব্রাঞ্চের নাম দেওয়া হয়নি — রিপোর্টে খালি দেখাবে। তারপরও এগিয়ে যাচ্ছি।")
             with st.spinner("PDF তৈরি হচ্ছে..."):
-                out_pdf = os.path.join(tempfile.gettempdir(), "loan_report.pdf")
+                out_pdf = os.path.join(tempfile.gettempdir(), out_filename)
                 rg.generate_report_pdf(
                     pdf_rows, out_pdf, branch_name=branch_name or "-",
-                    title_text=title_text, grouped=grouped,
+                    title_text=title_text, grouped=grouped, summary=summary,
                 )
             row_count = sum(len(g[1]) for g in pdf_rows) if grouped else len(pdf_rows)
             st.success(f"✅ PDF রেডি ({row_count}টা রো)।")
@@ -291,7 +342,7 @@ if report_xlsx_path:
                 st.download_button(
                     "⬇️ PDF রিপোর্ট ডাউনলোড করুন",
                     data=f.read(),
-                    file_name="loan_report.pdf",
+                    file_name=out_filename,
                     mime="application/pdf",
                     type="primary",
                 )
