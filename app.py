@@ -269,18 +269,25 @@ if report_xlsx_path:
         all_unions = rg.get_unions(report_rows)
 
 
-        def union_village_picker(unions_key, villages_key, help_optional=True):
-            """একটা Union multiselect + তার নিচে (বাছাই করা Union-এর মধ্যে থেকে)
-            ঐচ্ছিক Village multiselect দেখায়। রিটার্ন করে (selected_unions, selected_villages)।"""
+        def union_village_picker(base_key, help_optional=True):
+            """একটা Union multiselect + প্রতিটা বাছাই করা Union-এর জন্য আলাদা আলাদা
+            Village multiselect দেখায় — একেকটা Union-এর village selection সম্পূর্ণ
+            স্বতন্ত্র, একটার সাথে আরেকটার কোনো সম্পর্ক নেই। কোনো Union-এর জন্য Village
+            বাছাই না করলে সেই পুরো Union (সব Village) ধরা হবে।
+            রিটার্ন করে {union_name: [village, ...]} — dict খালি হলে মানে সব Union, সব Village।"""
             label = "Union বেছে নিন (এক বা একাধিক)" if not help_optional else \
                 "Union বেছে নিন (ঐচ্ছিক — খালি রাখলে সব Union দেখাবে)"
-            sel_unions = st.multiselect(label, all_unions, key=unions_key)
-            village_options = rg.get_villages_for_unions(report_rows, sel_unions or None)
-            sel_villages = st.multiselect(
-                "Village বেছে নিন (ঐচ্ছিক — খালি রাখলে বাছাই করা Union-এর সব Village দেখাবে)",
-                village_options, key=villages_key,
-            )
-            return sel_unions, sel_villages
+            sel_unions = st.multiselect(label, all_unions, key=f"{base_key}_unions")
+
+            union_village_map = {}
+            for union in sel_unions:
+                village_options = rg.get_villages_for_unions(report_rows, [union])
+                sel_villages = st.multiselect(
+                    f"↳ **{union}** — Village বেছে নিন (ঐচ্ছিক — খালি রাখলে এই Union-এর সব Village)",
+                    village_options, key=f"{base_key}_villages__{union}",
+                )
+                union_village_map[union] = sel_villages
+            return union_village_map
 
         gen_btn = False
         pdf_rows = None
@@ -294,7 +301,7 @@ if report_xlsx_path:
             start = col1.date_input("শুরুর তারিখ", value=date(2026, 1, 1), format="DD/MM/YYYY")
             end = col2.date_input("শেষের তারিখ", value=date(2026, 6, 30), format="DD/MM/YYYY")
 
-            overdue_unions, overdue_villages = union_village_picker("overdue_unions", "overdue_villages")
+            overdue_map = union_village_picker("overdue")
 
             if start > end:
                 st.error("শুরুর তারিখ শেষের তারিখের পরে হতে পারবে না।")
@@ -303,93 +310,79 @@ if report_xlsx_path:
                 gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_overdue")
 
             if gen_btn:
-                pdf_rows = rg.filter_overdue(report_rows, start, end,
-                                              overdue_unions or None, overdue_villages or None)
+                pdf_rows = rg.filter_overdue(report_rows, start, end, overdue_map)
                 title_text = f"Overdue Loan from {start.strftime('%d/%m/%Y')} to {end.strftime('%d/%m/%Y')}"
-                if overdue_unions:
-                    title_text += f" — {', '.join(overdue_unions)}"
-                if overdue_villages:
-                    title_text += f" ({', '.join(overdue_villages)})"
-                out_filename = rg.build_output_filename(
-                    "Overdue", unions=overdue_unions, villages=overdue_villages, start=start, end=end,
-                )
+                sel_desc = rg.describe_union_village_selection(overdue_map)
+                if sel_desc:
+                    title_text += f" — {sel_desc}"
+                out_filename = rg.build_output_filename("Overdue", overdue_map, start=start, end=end)
 
         elif report_type.startswith("Expired"):
             before = st.date_input("Expired Loan List up to", value=date.today(), format="DD/MM/YYYY",
                                     key="expired_date")
-            expired_unions, expired_villages = union_village_picker("expired_unions", "expired_villages")
+            expired_map = union_village_picker("expired")
             gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_expired")
             if gen_btn:
-                pdf_rows = rg.filter_expired(report_rows, before, expired_unions or None,
-                                              expired_villages or None)
+                pdf_rows = rg.filter_expired(report_rows, before, expired_map)
                 title_text = f"Expired Loan List up to {before.strftime('%d/%m/%Y')}"
-                if expired_unions:
-                    title_text += f" — {', '.join(expired_unions)}"
-                if expired_villages:
-                    title_text += f" ({', '.join(expired_villages)})"
+                sel_desc = rg.describe_union_village_selection(expired_map)
+                if sel_desc:
+                    title_text += f" — {sel_desc}"
                 summary = {
                     "label": "Balance",
                     "count": len(pdf_rows),
                     "value": sum(rg._num(d.get("bal_total")) for d in pdf_rows),
                 }
-                out_filename = rg.build_output_filename("Expired", unions=expired_unions,
-                                                          villages=expired_villages, single_date=before)
+                out_filename = rg.build_output_filename("Expired", expired_map, single_date=before)
 
         elif report_type.startswith("Rescheduled"):
             after = st.date_input("Rescheduled Loan up to", value=date.today(), format="DD/MM/YYYY",
                                    key="resch_date")
-            resch_unions, resch_villages = union_village_picker("resch_unions", "resch_villages")
+            resch_map = union_village_picker("resch")
             gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_resch")
             if gen_btn:
-                pdf_rows = rg.filter_rescheduled(report_rows, after, resch_unions or None,
-                                                  resch_villages or None)
+                pdf_rows = rg.filter_rescheduled(report_rows, after, resch_map)
                 title_text = f"Rescheduled Loan up to {after.strftime('%d/%m/%Y')}"
-                if resch_unions:
-                    title_text += f" — {', '.join(resch_unions)}"
-                if resch_villages:
-                    title_text += f" ({', '.join(resch_villages)})"
+                sel_desc = rg.describe_union_village_selection(resch_map)
+                if sel_desc:
+                    title_text += f" — {sel_desc}"
                 summary = {
                     "label": "Balance",
                     "count": len(pdf_rows),
                     "value": sum(rg._num(d.get("bal_total")) for d in pdf_rows),
                 }
-                out_filename = rg.build_output_filename("Rescheduled", unions=resch_unions,
-                                                          villages=resch_villages, single_date=after)
+                out_filename = rg.build_output_filename("Rescheduled", resch_map, single_date=after)
 
         elif report_type.startswith("Union/Village"):
-            grouped_unions, grouped_villages = union_village_picker("grouped_unions", "grouped_villages")
+            grouped_map = union_village_picker("grouped")
             gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_grouped")
             if gen_btn:
-                pdf_rows = rg.group_by_union_village(report_rows, grouped_unions or None,
-                                                       grouped_villages or None)
+                pdf_rows = rg.group_by_union_village(report_rows, grouped_map)
                 title_text = "Union / Village Wise Loan Report"
-                if grouped_unions:
-                    title_text += f" — {', '.join(grouped_unions)}"
-                if grouped_villages:
-                    title_text += f" ({', '.join(grouped_villages)})"
+                sel_desc = rg.describe_union_village_selection(grouped_map)
+                if sel_desc:
+                    title_text += f" — {sel_desc}"
                 grouped = True
                 total_count = sum(g[2]["count"] for g in pdf_rows)
                 total_balance = sum(g[2]["balance"] for g in pdf_rows)
                 summary = {"label": "Balance", "count": total_count, "value": total_balance}
-                out_filename = rg.build_output_filename("UnionVillage", unions=grouped_unions,
-                                                          villages=grouped_villages)
+                out_filename = rg.build_output_filename("UnionVillage", grouped_map)
 
         else:  # Due Amount Report
-            due_unions, due_villages = union_village_picker("due_unions", "due_villages")
+            due_map = union_village_picker("due")
             gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_due")
             if gen_btn:
-                pdf_rows = rg.filter_due_amount(report_rows, due_unions or None, due_villages or None)
+                pdf_rows = rg.filter_due_amount(report_rows, due_map)
                 title_text = "Due Amount Report"
-                if due_unions:
-                    title_text += f" — {', '.join(due_unions)}"
-                if due_villages:
-                    title_text += f" ({', '.join(due_villages)})"
+                sel_desc = rg.describe_union_village_selection(due_map)
+                if sel_desc:
+                    title_text += f" — {sel_desc}"
                 summary = {
                     "label": "Due Amount",
                     "count": len(pdf_rows),
                     "value": sum(rg._num(d.get("due_amount")) for d in pdf_rows),
                 }
-                out_filename = rg.build_output_filename("DueAmount", unions=due_unions, villages=due_villages)
+                out_filename = rg.build_output_filename("DueAmount", due_map)
 
         if gen_btn and pdf_rows is not None:
             if not branch_name.strip():

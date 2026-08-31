@@ -141,6 +141,51 @@ def _apply_village_filter(rows, villages):
     return [d for d in rows if (d.get("village") or "").strip().lower() in village_set]
 
 
+def _apply_union_village_map_filter(rows, union_village_map):
+    """union_village_map: {union_name: [village, ...]} অনুযায়ী ফিল্টার করে।
+    - union_village_map খালি/None হলে -> কোনো ফিল্টার নেই, সব রো ফেরত।
+    - কোনো Union-এর জন্য villages লিস্ট খালি থাকলে -> সেই Union-এর সব Village।
+    - villages লিস্ট থাকলে -> শুধু সেই Village(গুলো)।
+    প্রতিটা Union-এর village selection সম্পূর্ণ স্বতন্ত্র — একটা Union-এ village বাছাই
+    করলে অন্য (বাছাইকৃত) Union-এর রো-কে প্রভাবিত করে না।"""
+    if not union_village_map:
+        return rows
+    norm_map = {}
+    for u, vills in union_village_map.items():
+        u_key = (u or "").strip().lower()
+        if not u_key:
+            continue
+        norm_map[u_key] = {v.strip().lower() for v in (vills or []) if v and v.strip()}
+    if not norm_map:
+        return rows
+    out = []
+    for d in rows:
+        u_key = (d.get("union") or "").strip().lower()
+        if u_key not in norm_map:
+            continue
+        v_set = norm_map[u_key]
+        if not v_set or (d.get("village") or "").strip().lower() in v_set:
+            out.append(d)
+    return out
+
+
+def describe_union_village_selection(union_village_map):
+    """UI/টাইটেলে দেখানোর জন্য মানুষ-পড়ার-যোগ্য বর্ণনা বানায়, যেমন:
+    'Joynagar (Village1, Village2), Kashipur' -- Village বাছাই না থাকা Union-এর
+    নামের পাশে কোনো বন্ধনী থাকে না। union_village_map খালি হলে খালি string
+    ফেরত দেয় (মানে সব Union, সব Village)।"""
+    if not union_village_map:
+        return ""
+    parts = []
+    for u in sorted(union_village_map.keys()):
+        vills = union_village_map.get(u) or []
+        if vills:
+            parts.append(f"{u} ({', '.join(vills)})")
+        else:
+            parts.append(u)
+    return ", ".join(parts)
+
+
 def get_unions(rows):
     """সব রো থেকে ইউনিক, sorted Union-এর তালিকা।"""
     return sorted({(d.get("union") or "").strip() for d in rows if d.get("union")})
@@ -153,59 +198,54 @@ def get_villages_for_unions(rows, unions=None):
     return sorted({(d.get("village") or "").strip() for d in base if d.get("village")})
 
 
-def filter_overdue(rows, start_date, end_date, unions=None, villages=None):
-    """start_date <= overdue_date <= end_date (দুই পাশই inclusive) -- ঐচ্ছিক Union/Village
-    filter সহ -- oldest → newest sort।"""
+def filter_overdue(rows, start_date, end_date, union_village_map=None):
+    """start_date <= overdue_date <= end_date (দুই পাশই inclusive) -- ঐচ্ছিক
+    per-Union Village filter সহ -- oldest → newest sort।"""
     out = [
         d for d in rows
         if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and start_date <= dt <= end_date
     ]
-    out = _apply_union_filter(out, unions)
-    out = _apply_village_filter(out, villages)
+    out = _apply_union_village_map_filter(out, union_village_map)
     out.sort(key=lambda d: parse_ddmmyyyy(d.get("overdue_date")))
     return out
 
 
-def filter_expired(rows, before, unions=None, villages=None):
-    """overdue_date < before -- ঐচ্ছিক Union/Village filter সহ -- Union অনুযায়ী সাজানো,
-    প্রতি Union-এর ভেতরে oldest → newest।"""
+def filter_expired(rows, before, union_village_map=None):
+    """overdue_date < before -- ঐচ্ছিক per-Union Village filter সহ -- Union অনুযায়ী
+    সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
     out = [d for d in rows if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt < before]
-    out = _apply_union_filter(out, unions)
-    out = _apply_village_filter(out, villages)
+    out = _apply_union_village_map_filter(out, union_village_map)
     out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
-def filter_rescheduled(rows, after, unions=None, villages=None):
-    """overdue_date > after এবং Reschedule No. > 0 -- ঐচ্ছিক Union/Village filter সহ --
+def filter_rescheduled(rows, after, union_village_map=None):
+    """overdue_date > after এবং Reschedule No. > 0 -- ঐচ্ছিক per-Union Village filter সহ --
     Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
     out = [
         d for d in rows
         if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > after and _num(d.get("reschedule_no")) > 0
     ]
-    out = _apply_union_filter(out, unions)
-    out = _apply_village_filter(out, villages)
+    out = _apply_union_village_map_filter(out, union_village_map)
     out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
-def filter_due_amount(rows, unions=None, villages=None):
-    """যেসব রো-তে Due Amount উপলব্ধ (> 0), শুধু সেগুলো -- ঐচ্ছিক Union/Village filter সহ --
+def filter_due_amount(rows, union_village_map=None):
+    """যেসব রো-তে Due Amount উপলব্ধ (> 0), শুধু সেগুলো -- ঐচ্ছিক per-Union Village filter সহ --
     Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
     out = [d for d in rows if _num(d.get("due_amount")) > 0]
-    out = _apply_union_filter(out, unions)
-    out = _apply_village_filter(out, villages)
+    out = _apply_union_village_map_filter(out, union_village_map)
     out.sort(key=lambda d: ((d.get("union") or "").strip().lower(),
                              parse_ddmmyyyy(d.get("overdue_date")) or date.min))
     return out
 
 
-def group_by_union_village(rows, unions=None, villages=None):
+def group_by_union_village(rows, union_village_map=None):
     """Union অনুযায়ী গ্রুপ (Union নাম অনুযায়ী sorted), প্রতি গ্রুপে Village অনুযায়ী sort,
-    এবং প্রতি গ্রুপের সাথে (loan_count, balance_total) সাবটোটাল। ঐচ্ছিক Union/Village filter সহ।
-    রিটার্ন: [(union_name, [row, ...], {"count":.., "balance":..}), ...]"""
-    rows = _apply_union_filter(rows, unions)
-    rows = _apply_village_filter(rows, villages)
+    এবং প্রতি গ্রুপের সাথে (loan_count, balance_total) সাবটোটাল। ঐচ্ছিক per-Union Village
+    filter সহ। রিটার্ন: [(union_name, [row, ...], {"count":.., "balance":..}), ...]"""
+    rows = _apply_union_village_map_filter(rows, union_village_map)
     groups = defaultdict(list)
     for d in rows:
         union = (d.get("union") or "Unknown").strip() or "Unknown"
@@ -222,21 +262,26 @@ def group_by_union_village(rows, unions=None, villages=None):
     return result
 
 
-def build_output_filename(report_key, unions=None, villages=None, start=None, end=None, single_date=None):
+def build_output_filename(report_key, union_village_map=None, start=None, end=None, single_date=None):
     """PDF ফাইলের নাম dynamic ভাবে বানায়, যেমন:
-    Overdue_Joynagar_15-03-2025_to_30-06-2026.pdf
+    Overdue_Joynagar-Village1-Village2_Kashipur_15-03-2025_to_30-06-2026.pdf
     Expired_AllUnion_29-08-2026.pdf
     """
     def _clean(s):
         return re.sub(r"[^A-Za-z0-9]+", "", s) or "Union"
 
     parts = [report_key]
-    if unions:
-        parts.append("-".join(_clean(u) for u in unions))
+    if union_village_map:
+        union_parts = []
+        for u in sorted(union_village_map.keys()):
+            vills = union_village_map.get(u) or []
+            if vills:
+                union_parts.append(_clean(u) + "-" + "-".join(_clean(v) for v in vills))
+            else:
+                union_parts.append(_clean(u))
+        parts.append("_".join(union_parts))
     else:
         parts.append("AllUnion")
-    if villages:
-        parts.append("-".join(_clean(v) for v in villages))
     if start and end:
         parts.append(f"{start.strftime('%d-%m-%Y')}_to_{end.strftime('%d-%m-%Y')}")
     elif single_date:
