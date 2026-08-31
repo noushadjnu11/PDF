@@ -7,16 +7,24 @@ merged_loan_report.xlsx থেকে বিভিন্ন ধরনের A4-La
 সাপোর্টেড রিপোর্ট:
     1. Overdue Loan (নির্দিষ্ট তারিখ পর্যন্ত, oldest→newest) -- ঐচ্ছিক এক/একাধিক
        Union এবং (Union-এর ভেতরে) ঐচ্ছিক Village filter সহ
-    2. Expired Loan List up to <date>    -- overdue_date < date, oldest→newest
+    2. Expired Loan List up to <date>    -- overdue_date <= date (তারিখসহ), oldest→newest
     3. Rescheduled Loan up to <date>     -- overdue_date > date এবং Reschedule No. > 0
-    4. Union/Village-ভিত্তিক গ্রুপড রিপোর্ট (সংশোধিত Excel থেকে), প্রতি Union-এর
-       শেষে মোট লোন সংখ্যা ও মোট ব্যালেন্স সাবটোটাল সহ।
+    4. Union/Village-ভিত্তিক গ্রুপড রিপোর্ট (সংশোধিত Excel থেকে), প্রতি Union-এর শেষে
+       সাবটোটাল: Total Loans, Total Balance, Total Due, Total Overdue (রেফারেন্স তারিখ
+       পর্যন্ত overdue-এর সংখ্যা ও ব্যালেন্স), Total Rescheduled (রেফারেন্স তারিখের পরের
+       overdue + Reschedule No. > 0 রো-গুলোর সংখ্যা ও ব্যালেন্স) -- এবং সব Union শেষে
+       Grand Total (সব সাবটোটালের যোগফল)।
     5. Due Amount Report
 
     প্রতিটা রিপোর্টে যেখানেই Union বাছাইয়ের অপশন আছে, সেখানে ঐচ্ছিকভাবে সেই
     Union(গুলো)-র ভেতরের Village-ও বাছাই করা যায় (খালি রাখলে সব Village আসবে)।
 
-প্রতিটা PDF-এর প্রতি পেজেই উপরে ব্যাংকের লোগো + নাম + শাখা + রিপোর্ট-টাইটেল থাকে।
+    প্রতিটা রিপোর্টের টেবিলে "Loan Case"-এর বামে একটা "Sl." (Serial) কলাম থাকে।
+    সাধারণ রিপোর্টে এটা টানা ১, ২, ৩... — Union/Village রিপোর্টে প্রতিটা Union-এর
+    জন্য আলাদাভাবে ১ থেকে শুরু হয়।
+
+প্রতিটা PDF-এর প্রতি পেজেই উপরে ব্যাংকের লোগো + নাম + শাখা + রিপোর্ট-টাইটেল, এবং
+ডান পাশে Print Date/Time + "@Md. Noushad Ahmed" থাকে।
 """
 import os
 import re
@@ -211,9 +219,9 @@ def filter_overdue(rows, start_date, end_date, union_village_map=None):
 
 
 def filter_expired(rows, before, union_village_map=None):
-    """overdue_date < before -- ঐচ্ছিক per-Union Village filter সহ -- Union অনুযায়ী
-    সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
-    out = [d for d in rows if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt < before]
+    """overdue_date <= before (তারিখসহ, inclusive) -- ঐচ্ছিক per-Union Village filter সহ --
+    Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
+    out = [d for d in rows if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt <= before]
     out = _apply_union_village_map_filter(out, union_village_map)
     out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
@@ -241,10 +249,20 @@ def filter_due_amount(rows, union_village_map=None):
     return out
 
 
-def group_by_union_village(rows, union_village_map=None):
-    """Union অনুযায়ী গ্রুপ (Union নাম অনুযায়ী sorted), প্রতি গ্রুপে Village অনুযায়ী sort,
-    এবং প্রতি গ্রুপের সাথে (loan_count, balance_total) সাবটোটাল। ঐচ্ছিক per-Union Village
-    filter সহ। রিটার্ন: [(union_name, [row, ...], {"count":.., "balance":..}), ...]"""
+def group_by_union_village(rows, union_village_map=None, ref_date=None):
+    """Union অনুযায়ী গ্রুপ (Union নাম অনুযায়ী sorted), প্রতি গ্রুপে Village অনুযায়ী sort।
+    ঐচ্ছিক per-Union Village filter সহ। প্রতিটা Union-গ্রুপের সাথে সাবটোটাল থাকে:
+        count           -- মোট লোন সংখ্যা
+        balance         -- মোট Balance (bal_total যোগফল)
+        due             -- মোট Due Amount যোগফল
+        overdue_count   -- overdue_date <= ref_date এমন রো-র সংখ্যা
+        overdue_balance -- ঐ রো-গুলোর Balance যোগফল
+        resch_count     -- overdue_date > ref_date এবং Reschedule No. > 0 এমন রো-র সংখ্যা
+        resch_balance   -- ঐ রো-গুলোর Balance যোগফল
+    ref_date না দিলে আজকের তারিখ ধরা হয়।
+    রিটার্ন: [(union_name, [row, ...], subtotal_dict), ...]"""
+    if ref_date is None:
+        ref_date = date.today()
     rows = _apply_union_village_map_filter(rows, union_village_map)
     groups = defaultdict(list)
     for d in rows:
@@ -254,9 +272,25 @@ def group_by_union_village(rows, union_village_map=None):
     result = []
     for union in sorted(groups.keys()):
         group_rows = sorted(groups[union], key=lambda d: (d.get("village") or "").strip())
+
+        overdue_rows = [
+            d for d in group_rows
+            if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt <= ref_date
+        ]
+        resch_rows = [
+            d for d in group_rows
+            if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > ref_date
+            and _num(d.get("reschedule_no")) > 0
+        ]
+
         subtotal = {
             "count": len(group_rows),
             "balance": sum(_num(d.get("bal_total")) for d in group_rows),
+            "due": sum(_num(d.get("due_amount")) for d in group_rows),
+            "overdue_count": len(overdue_rows),
+            "overdue_balance": sum(_num(d.get("bal_total")) for d in overdue_rows),
+            "resch_count": len(resch_rows),
+            "resch_balance": sum(_num(d.get("bal_total")) for d in resch_rows),
         }
         result.append((union, group_rows, subtotal))
     return result
@@ -292,7 +326,7 @@ def build_output_filename(report_key, union_village_map=None, start=None, end=No
 # =============================================================================
 # ৩. PDF জেনারেশন (A4 Landscape, প্রতি পেজে ব্যাংক-হেডার)
 # =============================================================================
-def _draw_header(canvas, doc, bank_name, branch_name, logo_path, title_text):
+def _draw_header(canvas, doc, bank_name, branch_name, logo_path, title_text, print_dt_str=None):
     canvas.saveState()
     page_w, page_h = landscape(A4)
 
@@ -338,6 +372,11 @@ def _draw_header(canvas, doc, bank_name, branch_name, logo_path, title_text):
     canvas.setFont(branch_font, branch_size)
     canvas.drawCentredString(page_w / 2, y_branch, branch_line)
 
+    if print_dt_str:
+        canvas.setFont(FONT_REGULAR, 7)
+        canvas.drawRightString(page_w - 10 * mm, y_bank, f"Print: {print_dt_str}")
+        canvas.drawRightString(page_w - 10 * mm, y_sub, "@Md. Noushad Ahmed")
+
     canvas.setFont(FONT_BOLD, 11)
     canvas.drawCentredString(page_w / 2, page_h - 39.5 * mm, title_text)
     canvas.setLineWidth(0.5)
@@ -357,14 +396,21 @@ def _fmt_cell(key, val):
     return str(val)
 
 
-def _build_table(data_rows, page_w, cell_style, header_style):
-    table_data = [[Paragraph(h, header_style) for _, h in COLUMNS]]
-    for d in data_rows:
-        table_data.append([Paragraph(_fmt_cell(k, d.get(k)), cell_style) for k, _ in COLUMNS])
+_SL_WEIGHT = 0.45
+
+
+def _build_table(data_rows, page_w, cell_style, header_style, start_serial=1):
+    header_row = [Paragraph("Sl.", header_style)] + [Paragraph(h, header_style) for _, h in COLUMNS]
+    table_data = [header_row]
+    for i, d in enumerate(data_rows):
+        row = [Paragraph(str(start_serial + i), cell_style)] + \
+              [Paragraph(_fmt_cell(k, d.get(k)), cell_style) for k, _ in COLUMNS]
+        table_data.append(row)
 
     avail_width = page_w - 16 * mm
-    total_weight = sum(_COLUMN_WEIGHTS.get(k, 1.0) for k, _ in COLUMNS)
-    col_widths = [avail_width * _COLUMN_WEIGHTS.get(k, 1.0) / total_weight for k, _ in COLUMNS]
+    total_weight = _SL_WEIGHT + sum(_COLUMN_WEIGHTS.get(k, 1.0) for k, _ in COLUMNS)
+    col_widths = [avail_width * _SL_WEIGHT / total_weight] + \
+                 [avail_width * _COLUMN_WEIGHTS.get(k, 1.0) / total_weight for k, _ in COLUMNS]
     t = Table(table_data, colWidths=col_widths, repeatRows=1)
     t.setStyle(TableStyle([
     ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
@@ -385,8 +431,11 @@ def generate_report_pdf(rows, out_path, branch_name, title_text,
         grouped=False হলে -- filter_* ফাংশনের রেজাল্ট (flat list of dict)
         grouped=True হলে  -- group_by_union_village()-এর রেজাল্ট
     summary: {"label": "Balance"/"Due Amount", "count": int, "value": float} দিলে
-        রিপোর্টের একদম নিচে "Total Loans: N | Total <label>: X" লাইন বসবে
-        (grouped=True হলে প্রতি Union-এর সাবটোটালের নিচে, সব গ্রুপ শেষে গ্র্যান্ড-টোটাল হিসেবে)।
+        (শুধু grouped=False রিপোর্টে) রিপোর্টের একদম নিচে
+        "Total Loans: N | Total <label>: X" লাইন বসবে।
+        grouped=True হলে এই প্যারামিটার ব্যবহৃত হয় না -- প্রতি Union-এর সাবটোটাল
+        (Loans/Balance/Due/Overdue/Rescheduled) এবং শেষে Grand Total,
+        group_by_union_village()-এর subtotal dict থেকেই স্বয়ংক্রিয়ভাবে বসে।
     """
     page_w, page_h = landscape(A4)
     default_logo = os.path.join(os.path.dirname(__file__), "logo.png")
@@ -431,22 +480,38 @@ def generate_report_pdf(rows, out_path, branch_name, title_text,
     else:
         if not rows:
             elements.append(Paragraph("No data found.", normal_style))
+        grand = defaultdict(float)
+        grand_keys = ["count", "balance", "due", "overdue_count", "overdue_balance",
+                      "resch_count", "resch_balance"]
         for union, group_rows, subtotal in rows:
             elements.append(Paragraph(f"Union: {union}", union_style))
             elements.append(_build_table(group_rows, page_w, cell_style, header_style))
             elements.append(Paragraph(
-                f"Total Loans: {subtotal['count']} &nbsp;&nbsp;|&nbsp;&nbsp; "
-                f"Total Balance: {subtotal['balance']:,.0f}",
+                f"Total Loans: {subtotal.get('count', 0)} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"Total Balance: {subtotal.get('balance', 0):,.0f} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"Total Due: {subtotal.get('due', 0):,.0f} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"Total Overdue: {subtotal.get('overdue_count', 0)} "
+                f"(Balance: {subtotal.get('overdue_balance', 0):,.0f}) &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"Total Rescheduled: {subtotal.get('resch_count', 0)} "
+                f"(Balance: {subtotal.get('resch_balance', 0):,.0f})",
                 subtotal_style,
             ))
             elements.append(Spacer(1, 6))
-        if summary is not None and rows:
+            for k in grand_keys:
+                grand[k] += subtotal.get(k, 0)
+        if rows:
             elements.append(Paragraph(
-                f"Grand Total Loans: {summary['count']} &nbsp;&nbsp;|&nbsp;&nbsp; "
-                f"Grand Total {summary['label']}: {summary['value']:,.0f}",
+                f"Grand Total Loans: {int(grand['count'])} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"Grand Total Balance: {grand['balance']:,.0f} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"Grand Total Due: {grand['due']:,.0f} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"Grand Total Overdue: {int(grand['overdue_count'])} "
+                f"(Balance: {grand['overdue_balance']:,.0f}) &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"Grand Total Rescheduled: {int(grand['resch_count'])} "
+                f"(Balance: {grand['resch_balance']:,.0f})",
                 subtotal_style,
             ))
 
-    header_fn = lambda c, d: _draw_header(c, d, bank_name, branch_name, logo_path, title_text)
+    print_dt_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+    header_fn = lambda c, d: _draw_header(c, d, bank_name, branch_name, logo_path, title_text, print_dt_str)
     doc.build(elements, onFirstPage=header_fn, onLaterPages=header_fn)
     return out_path

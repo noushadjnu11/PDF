@@ -259,7 +259,7 @@ if report_xlsx_path:
             "রিপোর্টের ধরন বাছাই করুন",
             [
                 "Overdue Loan (নির্দিষ্ট তারিখ পর্যন্ত, oldest→newest)",
-                "Expired Loan List (নির্দিষ্ট তারিখের আগের সব)",
+                "Expired Loan List (নির্দিষ্ট তারিখ পর্যন্ত, তারিখসহ)",
                 "Rescheduled Loan (নির্দিষ্ট তারিখের পরের + Reschedule No. > 0)",
                 "Union/Village সাজানো + সাবটোটাল রিপোর্ট",
                 "Due Amount Report (যেসব রো-তে Due Amount আছে)",
@@ -354,19 +354,22 @@ if report_xlsx_path:
                 out_filename = rg.build_output_filename("Rescheduled", resch_map, single_date=after)
 
         elif report_type.startswith("Union/Village"):
+            ref_date = st.date_input(
+                "রেফারেন্স তারিখ (এই তারিখ পর্যন্ত overdue = Total Overdue; এর পরের overdue "
+                "+ Reschedule No. > 0 = Total Rescheduled)",
+                value=date.today(), format="DD/MM/YYYY", key="grouped_ref_date",
+            )
             grouped_map = union_village_picker("grouped")
             gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_grouped")
             if gen_btn:
-                pdf_rows = rg.group_by_union_village(report_rows, grouped_map)
-                title_text = "Union / Village Wise Loan Report"
+                pdf_rows = rg.group_by_union_village(report_rows, grouped_map, ref_date)
+                title_text = f"Union / Village Wise Loan Report (Ref: {ref_date.strftime('%d/%m/%Y')})"
                 sel_desc = rg.describe_union_village_selection(grouped_map)
                 if sel_desc:
                     title_text += f" — {sel_desc}"
                 grouped = True
-                total_count = sum(g[2]["count"] for g in pdf_rows)
-                total_balance = sum(g[2]["balance"] for g in pdf_rows)
-                summary = {"label": "Balance", "count": total_count, "value": total_balance}
-                out_filename = rg.build_output_filename("UnionVillage", grouped_map)
+                summary = None
+                out_filename = rg.build_output_filename("UnionVillage", grouped_map, single_date=ref_date)
 
         else:  # Due Amount Report
             due_map = union_village_picker("due")
