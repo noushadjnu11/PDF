@@ -5,12 +5,16 @@ report_generator.py
 merged_loan_report.xlsx থেকে বিভিন্ন ধরনের A4-Landscape ব্যাংক PDF রিপোর্ট বানানোর মডিউল।
 
 সাপোর্টেড রিপোর্ট:
-    1. Overdue Loan up to <date>         -- overdue_date <= date, oldest→newest
-    2. (একই, কিন্তু) নির্দিষ্ট এক/একাধিক Union filter সহ
-    3. Expired Loan List up to <date>    -- overdue_date < date, oldest→newest
-    4. Rescheduled Loan up to <date>     -- overdue_date > date এবং Reschedule No. > 0
-    5. Union/Village-ভিত্তিক গ্রুপড রিপোর্ট (সংশোধিত Excel থেকে), প্রতি Union-এর
+    1. Overdue Loan (নির্দিষ্ট তারিখ পর্যন্ত, oldest→newest) -- ঐচ্ছিক এক/একাধিক
+       Union এবং (Union-এর ভেতরে) ঐচ্ছিক Village filter সহ
+    2. Expired Loan List up to <date>    -- overdue_date < date, oldest→newest
+    3. Rescheduled Loan up to <date>     -- overdue_date > date এবং Reschedule No. > 0
+    4. Union/Village-ভিত্তিক গ্রুপড রিপোর্ট (সংশোধিত Excel থেকে), প্রতি Union-এর
        শেষে মোট লোন সংখ্যা ও মোট ব্যালেন্স সাবটোটাল সহ।
+    5. Due Amount Report
+
+    প্রতিটা রিপোর্টে যেখানেই Union বাছাইয়ের অপশন আছে, সেখানে ঐচ্ছিকভাবে সেই
+    Union(গুলো)-র ভেতরের Village-ও বাছাই করা যায় (খালি রাখলে সব Village আসবে)।
 
 প্রতিটা PDF-এর প্রতি পেজেই উপরে ব্যাংকের লোগো + নাম + শাখা + রিপোর্ট-টাইটেল থাকে।
 """
@@ -121,25 +125,6 @@ def _num(v):
 # =============================================================================
 # ২. ফিল্টার + সর্ট ফাংশনসমূহ
 # =============================================================================
-def filter_overdue(rows, start_date, end_date):
-    """start_date <= overdue_date <= end_date (দুই পাশই inclusive) -- oldest → newest sort।"""
-    out = [
-        d for d in rows
-        if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and start_date <= dt <= end_date
-    ]
-    out.sort(key=lambda d: parse_ddmmyyyy(d.get("overdue_date")))
-    return out
-
-
-def filter_union_overdue(rows, start_date, end_date, unions):
-    """filter_overdue()-এর ফলাফল থেকে শুধু দেওয়া Union(গুলো)-র রো।"""
-    union_set = {u.strip().lower() for u in unions if u and u.strip()}
-    base = filter_overdue(rows, start_date, end_date)
-    if not union_set:
-        return base
-    return [d for d in base if (d.get("union") or "").strip().lower() in union_set]
-
-
 def _apply_union_filter(rows, unions):
     """unions দেওয়া থাকলে শুধু সেই Union(গুলো)-র রো রাখে; না থাকলে সব রো ফেরত দেয়।"""
     union_set = {u.strip().lower() for u in (unions or []) if u and u.strip()}
@@ -148,42 +133,79 @@ def _apply_union_filter(rows, unions):
     return [d for d in rows if (d.get("union") or "").strip().lower() in union_set]
 
 
-def filter_expired(rows, before, unions=None):
-    """overdue_date < before -- ঐচ্ছিক Union filter সহ -- Union অনুযায়ী সাজানো,
+def _apply_village_filter(rows, villages):
+    """villages দেওয়া থাকলে শুধু সেই Village(গুলো)-র রো রাখে; না থাকলে সব রো ফেরত দেয়।"""
+    village_set = {v.strip().lower() for v in (villages or []) if v and v.strip()}
+    if not village_set:
+        return rows
+    return [d for d in rows if (d.get("village") or "").strip().lower() in village_set]
+
+
+def get_unions(rows):
+    """সব রো থেকে ইউনিক, sorted Union-এর তালিকা।"""
+    return sorted({(d.get("union") or "").strip() for d in rows if d.get("union")})
+
+
+def get_villages_for_unions(rows, unions=None):
+    """দেওয়া Union(গুলো)-র মধ্যে থাকা ইউনিক, sorted Village-এর তালিকা।
+    unions খালি থাকলে সব রো-এর Village ফেরত দেয়।"""
+    base = _apply_union_filter(rows, unions)
+    return sorted({(d.get("village") or "").strip() for d in base if d.get("village")})
+
+
+def filter_overdue(rows, start_date, end_date, unions=None, villages=None):
+    """start_date <= overdue_date <= end_date (দুই পাশই inclusive) -- ঐচ্ছিক Union/Village
+    filter সহ -- oldest → newest sort।"""
+    out = [
+        d for d in rows
+        if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and start_date <= dt <= end_date
+    ]
+    out = _apply_union_filter(out, unions)
+    out = _apply_village_filter(out, villages)
+    out.sort(key=lambda d: parse_ddmmyyyy(d.get("overdue_date")))
+    return out
+
+
+def filter_expired(rows, before, unions=None, villages=None):
+    """overdue_date < before -- ঐচ্ছিক Union/Village filter সহ -- Union অনুযায়ী সাজানো,
     প্রতি Union-এর ভেতরে oldest → newest।"""
     out = [d for d in rows if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt < before]
     out = _apply_union_filter(out, unions)
+    out = _apply_village_filter(out, villages)
     out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
-def filter_rescheduled(rows, after, unions=None):
-    """overdue_date > after এবং Reschedule No. > 0 -- ঐচ্ছিক Union filter সহ --
+def filter_rescheduled(rows, after, unions=None, villages=None):
+    """overdue_date > after এবং Reschedule No. > 0 -- ঐচ্ছিক Union/Village filter সহ --
     Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
     out = [
         d for d in rows
         if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > after and _num(d.get("reschedule_no")) > 0
     ]
     out = _apply_union_filter(out, unions)
+    out = _apply_village_filter(out, villages)
     out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
-def filter_due_amount(rows, unions=None):
-    """যেসব রো-তে Due Amount উপলব্ধ (> 0), শুধু সেগুলো -- ঐচ্ছিক Union filter সহ --
+def filter_due_amount(rows, unions=None, villages=None):
+    """যেসব রো-তে Due Amount উপলব্ধ (> 0), শুধু সেগুলো -- ঐচ্ছিক Union/Village filter সহ --
     Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
     out = [d for d in rows if _num(d.get("due_amount")) > 0]
     out = _apply_union_filter(out, unions)
+    out = _apply_village_filter(out, villages)
     out.sort(key=lambda d: ((d.get("union") or "").strip().lower(),
                              parse_ddmmyyyy(d.get("overdue_date")) or date.min))
     return out
 
 
-def group_by_union_village(rows, unions=None):
+def group_by_union_village(rows, unions=None, villages=None):
     """Union অনুযায়ী গ্রুপ (Union নাম অনুযায়ী sorted), প্রতি গ্রুপে Village অনুযায়ী sort,
-    এবং প্রতি গ্রুপের সাথে (loan_count, balance_total) সাবটোটাল। ঐচ্ছিক Union filter সহ।
+    এবং প্রতি গ্রুপের সাথে (loan_count, balance_total) সাবটোটাল। ঐচ্ছিক Union/Village filter সহ।
     রিটার্ন: [(union_name, [row, ...], {"count":.., "balance":..}), ...]"""
     rows = _apply_union_filter(rows, unions)
+    rows = _apply_village_filter(rows, villages)
     groups = defaultdict(list)
     for d in rows:
         union = (d.get("union") or "Unknown").strip() or "Unknown"
@@ -200,7 +222,7 @@ def group_by_union_village(rows, unions=None):
     return result
 
 
-def build_output_filename(report_key, unions=None, start=None, end=None, single_date=None):
+def build_output_filename(report_key, unions=None, villages=None, start=None, end=None, single_date=None):
     """PDF ফাইলের নাম dynamic ভাবে বানায়, যেমন:
     Overdue_Joynagar_15-03-2025_to_30-06-2026.pdf
     Expired_AllUnion_29-08-2026.pdf
@@ -213,6 +235,8 @@ def build_output_filename(report_key, unions=None, start=None, end=None, single_
         parts.append("-".join(_clean(u) for u in unions))
     else:
         parts.append("AllUnion")
+    if villages:
+        parts.append("-".join(_clean(v) for v in villages))
     if start and end:
         parts.append(f"{start.strftime('%d-%m-%Y')}_to_{end.strftime('%d-%m-%Y')}")
     elif single_date:
