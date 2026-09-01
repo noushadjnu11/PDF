@@ -58,7 +58,7 @@ BD_TZ = timezone(timedelta(hours=6))  # Bangladesh Standard Time, GMT+6 -- স�
 
 # Excel-এর কলাম অর্ডারের সাথে হুবহু মিল রেখে (pdf_processor.write_excel দেখুন)
 COLUMNS = [
-    ("prefixed_loan_case", "Loan Case"),
+    ("prefixed_loan_case", "Case"),
     ("borrower", "Borrower"),
     ("father", "Father"),
     ("spouse", "Spouse"),
@@ -66,7 +66,7 @@ COLUMNS = [
     ("union", "Union"),
     ("phone", "Phone"),
     ("overdue_date", "Overdue"),
-    ("installment", "Installment"),
+    ("installment", "Inst."),
     ("bal_principal", "Principal"),
     ("bal_interest", "Interest"),
     ("bal_total", "Balance"),
@@ -79,7 +79,7 @@ _AMOUNT_KEYS = {"installment", "bal_principal", "bal_interest", "bal_total", "du
 
 # কলামগুলোর আপেক্ষিক প্রস্থ -- সংখ্যা/তারিখ কলাম সরু, নাম/ঠিকানা কলাম চওড়া
 _COLUMN_WEIGHTS = {
-    "prefixed_loan_case": 1.0,
+    "prefixed_loan_case": 9.0,
     "borrower": 1.3,
     "father": 1.3,
     "spouse": 1.3,
@@ -91,7 +91,7 @@ _COLUMN_WEIGHTS = {
     "bal_principal": 0.8,
     "bal_interest": 0.7,
     "bal_total": 0.8,
-    "due_amount": 0.65,
+    "due_amount": 0.7,
     "reschedule_no": 0.55,
     "blank_col": 0.8,
 }
