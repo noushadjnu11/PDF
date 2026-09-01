@@ -79,7 +79,7 @@ _AMOUNT_KEYS = {"installment", "bal_principal", "bal_interest", "bal_total", "du
 
 # কলামগুলোর আপেক্ষিক প্রস্থ -- সংখ্যা/তারিখ কলাম সরু, নাম/ঠিকানা কলাম চওড়া
 _COLUMN_WEIGHTS = {
-    "prefixed_loan_case": 9.0,
+    "prefixed_loan_case": 0.9,
     "borrower": 1.3,
     "father": 1.3,
     "spouse": 1.3,
