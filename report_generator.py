@@ -23,6 +23,14 @@ merged_loan_report.xlsx থেকে বিভিন্ন ধরনের A4-La
     সাধারণ রিপোর্টে এটা টানা ১, ২, ৩... — Union/Village রিপোর্টে প্রতিটা Union-এর
     জন্য আলাদাভাবে ১ থেকে শুরু হয়।
 
+    প্রতিটা রিপোর্টেই বিদ্যমান (ডিফল্ট) সর্টিং-এর পাশাপাশি ঐচ্ছিকভাবে Loan Case
+    অনুযায়ী সর্ট করা যায় (sort_by_loan_case=True) -- প্রিফিক্স-ভিত্তিক গ্রুপ করে
+    (যেমন সব "OWN..." একসাথে) ছোট থেকে বড় সাজে।
+
+    প্রতিটা রিপোর্ট PDF-এর পাশাপাশি Excel (.xlsx)-ও ডাউনলোড করা যায়
+    (generate_report_excel) -- সেখানে ব্যাংকের নাম/লোগো/টাইটেল থাকে না, শুধু
+    হেডার রো (Sl. + বাকি কলাম) আর তার নিচে ডেটা রো।
+
 প্রতিটা PDF-এর প্রতি পেজেই উপরে ব্যাংকের লোগো + নাম + শাখা + রিপোর্ট-টাইটেল, এবং
 ডান পাশে Print Date/Time + "@Md. Noushad Ahmed" থাকে।
 """
@@ -32,6 +40,8 @@ from collections import defaultdict
 from datetime import date, datetime, timezone, timedelta
 
 import openpyxl
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4, landscape
@@ -48,7 +58,7 @@ BD_TZ = timezone(timedelta(hours=6))  # Bangladesh Standard Time, GMT+6 -- স�
 
 # Excel-এর কলাম অর্ডারের সাথে হুবহু মিল রেখে (pdf_processor.write_excel দেখুন)
 COLUMNS = [
-    ("prefixed_loan_case", "Loan"),
+    ("prefixed_loan_case", "Loan Case"),
     ("borrower", "Borrower"),
     ("father", "Father"),
     ("spouse", "Spouse"),
@@ -56,13 +66,13 @@ COLUMNS = [
     ("union", "Union"),
     ("phone", "Phone"),
     ("overdue_date", "Overdue"),
-    ("installment", "Inst."),
+    ("installment", "Installment"),
     ("bal_principal", "Principal"),
     ("bal_interest", "Interest"),
     ("bal_total", "Balance"),
     ("due_amount", "Due"),
     ("reschedule_no", "Res."),
-    ("blank_col", "Comm."),
+    ("blank_col", "Comment"),
 ]
 
 _AMOUNT_KEYS = {"installment", "bal_principal", "bal_interest", "bal_total", "due_amount"}
@@ -77,11 +87,11 @@ _COLUMN_WEIGHTS = {
     "union": 1.0,
     "phone": 1.15,
     "overdue_date": 0.85,
-    "installment": 0.8,
+    "installment": 0.95,
     "bal_principal": 0.8,
     "bal_interest": 0.7,
     "bal_total": 0.8,
-    "due_amount": 0.8,
+    "due_amount": 0.65,
     "reschedule_no": 0.55,
     "blank_col": 0.8,
 }
@@ -130,6 +140,21 @@ def _num(v):
         return float(str(v).replace(",", ""))
     except (TypeError, ValueError):
         return 0.0
+
+
+_LOAN_CASE_RE = re.compile(r"^(\D*)(\d*)")
+
+
+def _loan_case_sort_key(row):
+    """Loan Case-কে অক্ষর-প্রিফিক্স + সংখ্যা অংশে ভেঙে সাজানোর key বানায়, যেমন
+    'OWN2' < 'OWN10' (সংখ্যা হিসেবে, string হিসেবে না) -- একই প্রিফিক্সের (যেমন 'OWN')
+    সব Loan Case একসাথে গ্রুপ হয়ে ছোট থেকে বড় সাজে, তারপর পরের প্রিফিক্স।"""
+    s = (row.get("prefixed_loan_case") or "").strip()
+    m = _LOAN_CASE_RE.match(s)
+    prefix = (m.group(1) or "").strip().upper() if m else ""
+    num_str = (m.group(2) or "") if m else ""
+    num = int(num_str) if num_str.isdigit() else 0
+    return (prefix, num, s.upper())
 
 
 # =============================================================================
@@ -209,51 +234,70 @@ def get_villages_for_unions(rows, unions=None):
     return sorted({(d.get("village") or "").strip() for d in base if d.get("village")})
 
 
-def filter_overdue(rows, start_date, end_date, union_village_map=None):
+def filter_overdue(rows, start_date, end_date, union_village_map=None, sort_by_loan_case=False):
     """start_date <= overdue_date <= end_date (দুই পাশই inclusive) -- ঐচ্ছিক
-    per-Union Village filter সহ -- oldest → newest sort।"""
+    per-Union Village filter সহ -- ডিফল্ট sort: oldest → newest (overdue date অনুযায়ী)।
+    sort_by_loan_case=True দিলে তার বদলে Loan Case অনুযায়ী (প্রিফিক্স-ভিত্তিক গ্রুপ করে
+    ছোট থেকে বড়) সাজানো হয়।"""
     out = [
         d for d in rows
         if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and start_date <= dt <= end_date
     ]
     out = _apply_union_village_map_filter(out, union_village_map)
-    out.sort(key=lambda d: parse_ddmmyyyy(d.get("overdue_date")))
+    if sort_by_loan_case:
+        out.sort(key=_loan_case_sort_key)
+    else:
+        out.sort(key=lambda d: parse_ddmmyyyy(d.get("overdue_date")))
     return out
 
 
-def filter_expired(rows, before, union_village_map=None):
+def filter_expired(rows, before, union_village_map=None, sort_by_loan_case=False):
     """overdue_date <= before (তারিখসহ, inclusive) -- ঐচ্ছিক per-Union Village filter সহ --
-    Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
+    ডিফল্ট sort: Union অনুযায়ী, প্রতি Union-এর ভেতরে oldest → newest।
+    sort_by_loan_case=True দিলে তার বদলে Loan Case অনুযায়ী সাজানো হয়।"""
     out = [d for d in rows if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt <= before]
     out = _apply_union_village_map_filter(out, union_village_map)
-    out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
+    if sort_by_loan_case:
+        out.sort(key=_loan_case_sort_key)
+    else:
+        out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
-def filter_rescheduled(rows, after, union_village_map=None):
+def filter_rescheduled(rows, after, union_village_map=None, sort_by_loan_case=False):
     """overdue_date > after এবং Reschedule No. > 0 -- ঐচ্ছিক per-Union Village filter সহ --
-    Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
+    ডিফল্ট sort: Union অনুযায়ী, প্রতি Union-এর ভেতরে oldest → newest।
+    sort_by_loan_case=True দিলে তার বদলে Loan Case অনুযায়ী সাজানো হয়।"""
     out = [
         d for d in rows
         if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > after and _num(d.get("reschedule_no")) > 0
     ]
     out = _apply_union_village_map_filter(out, union_village_map)
-    out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
+    if sort_by_loan_case:
+        out.sort(key=_loan_case_sort_key)
+    else:
+        out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
-def filter_due_amount(rows, union_village_map=None):
+def filter_due_amount(rows, union_village_map=None, sort_by_loan_case=False):
     """যেসব রো-তে Due Amount উপলব্ধ (> 0), শুধু সেগুলো -- ঐচ্ছিক per-Union Village filter সহ --
-    Union অনুযায়ী সাজানো, প্রতি Union-এর ভেতরে oldest → newest।"""
+    ডিফল্ট sort: Union অনুযায়ী, প্রতি Union-এর ভেতরে oldest → newest।
+    sort_by_loan_case=True দিলে তার বদলে Loan Case অনুযায়ী সাজানো হয়।"""
     out = [d for d in rows if _num(d.get("due_amount")) > 0]
     out = _apply_union_village_map_filter(out, union_village_map)
-    out.sort(key=lambda d: ((d.get("union") or "").strip().lower(),
-                             parse_ddmmyyyy(d.get("overdue_date")) or date.min))
+    if sort_by_loan_case:
+        out.sort(key=_loan_case_sort_key)
+    else:
+        out.sort(key=lambda d: ((d.get("union") or "").strip().lower(),
+                                 parse_ddmmyyyy(d.get("overdue_date")) or date.min))
     return out
 
 
-def group_by_union_village(rows, union_village_map=None, ref_date=None):
-    """Union অনুযায়ী গ্রুপ (Union নাম অনুযায়ী sorted), প্রতি গ্রুপে Village অনুযায়ী sort।
+def group_by_union_village(rows, union_village_map=None, ref_date=None, sort_by_loan_case=False):
+    """Union অনুযায়ী গ্রুপ (Union নাম অনুযায়ী sorted), প্রতি গ্রুপের ভেতরে ডিফল্ট sort:
+    Village অনুযায়ী। sort_by_loan_case=True দিলে প্রতি Union-গ্রুপের ভেতরে তার বদলে
+    Loan Case অনুযায়ী (প্রিফিক্স-ভিত্তিক গ্রুপ করে ছোট থেকে বড়) সাজানো হয়।
     ঐচ্ছিক per-Union Village filter সহ। প্রতিটা Union-গ্রুপের সাথে সাবটোটাল থাকে:
         count           -- মোট লোন সংখ্যা
         balance         -- মোট Balance (bal_total যোগফল)
@@ -274,7 +318,10 @@ def group_by_union_village(rows, union_village_map=None, ref_date=None):
 
     result = []
     for union in sorted(groups.keys()):
-        group_rows = sorted(groups[union], key=lambda d: (d.get("village") or "").strip())
+        if sort_by_loan_case:
+            group_rows = sorted(groups[union], key=_loan_case_sort_key)
+        else:
+            group_rows = sorted(groups[union], key=lambda d: (d.get("village") or "").strip())
 
         overdue_rows = [
             d for d in group_rows
@@ -299,10 +346,11 @@ def group_by_union_village(rows, union_village_map=None, ref_date=None):
     return result
 
 
-def build_output_filename(report_key, union_village_map=None, start=None, end=None, single_date=None):
-    """PDF ফাইলের নাম dynamic ভাবে বানায়, যেমন:
+def build_output_filename(report_key, union_village_map=None, start=None, end=None,
+                           single_date=None, ext="pdf"):
+    """ফাইলের নাম dynamic ভাবে বানায়, যেমন:
     Overdue_Joynagar-Partial_Kashipur_15-03-2025_to_30-06-2026.pdf
-    Expired_AllUnion_29-08-2026.pdf
+    Expired_AllUnion_29-08-2026.xlsx
     """
     def _clean(s):
         return re.sub(r"[^A-Za-z0-9]+", "", s) or "Union"
@@ -323,7 +371,7 @@ def build_output_filename(report_key, union_village_map=None, start=None, end=No
         parts.append(f"{start.strftime('%d-%m-%Y')}_to_{end.strftime('%d-%m-%Y')}")
     elif single_date:
         parts.append(single_date.strftime("%d-%m-%Y"))
-    return "_".join(parts) + ".pdf"
+    return "_".join(parts) + f".{ext}"
 
 
 # =============================================================================
@@ -517,4 +565,55 @@ def generate_report_pdf(rows, out_path, branch_name, title_text,
     print_dt_str = datetime.now(BD_TZ).strftime("%d/%m/%Y %I:%M %p")
     header_fn = lambda c, d: _draw_header(c, d, bank_name, branch_name, logo_path, title_text, print_dt_str)
     doc.build(elements, onFirstPage=header_fn, onLaterPages=header_fn)
+    return out_path
+
+
+def _excel_cell(key, val):
+    """Excel-এর সেলে বসানোর জন্য মান রূপান্তর করে -- Amount কলাম হলে সংখ্যা (float/int)
+    রিটার্ন করে (যাতে Excel-এ যোগ/বিয়োগ করা যায়, কমা-বসানো string না), বাকি সব
+    কলাম আসল string/None-ই থাকে।"""
+    if val is None or str(val).strip() in ("", "None"):
+        return None
+    if key in _AMOUNT_KEYS:
+        try:
+            n = float(str(val).replace(",", ""))
+            return int(n) if n == int(n) else n
+        except (TypeError, ValueError):
+            return val
+    return val
+
+
+def generate_report_excel(rows, out_path, grouped=False):
+    """ব্যাংকের নাম/লোগো/শাখা/টাইটেল ছাড়া শুধু হেডার রো + তার নিচে ডেটা রো সহ একটা
+    .xlsx ফাইল বানায় -- PDF টেবিলের মতোই একই কলাম-অর্ডারে, বামে Sl. কলামসহ।
+    rows:
+        grouped=False হলে -- filter_* ফাংশনের রেজাল্ট (flat list of dict)
+        grouped=True হলে  -- group_by_union_village()-এর রেজাল্ট -- এক্ষেত্রে সব
+        Union-এর রো একটাই টানা টেবিলে (Union কলাম দিয়ে চেনা যাবে) বসে, Sl. পুরো
+        শিটজুড়ে টানা ১, ২, ৩...; কোনো সাবটোটাল/গ্র্যান্ড-টোটাল রো থাকে না।"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Report"
+
+    header = ["Sl."] + [h for _, h in COLUMNS]
+    ws.append(header)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    if grouped:
+        flat_rows = []
+        for _union, group_rows, _subtotal in rows:
+            flat_rows.extend(group_rows)
+    else:
+        flat_rows = rows
+
+    for i, d in enumerate(flat_rows, start=1):
+        ws.append([i] + [_excel_cell(k, d.get(k)) for k, _ in COLUMNS])
+
+    widths = [6] + [max(10, len(h) + 2) for _, h in COLUMNS]
+    for idx, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = w
+
+    ws.freeze_panes = "A2"
+    wb.save(out_path)
     return out_path
