@@ -29,7 +29,7 @@ merged_loan_report.xlsx থেকে বিভিন্ন ধরনের A4-La
 import os
 import re
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timezone, timedelta
 
 import openpyxl
 from reportlab.lib import colors
@@ -43,6 +43,8 @@ from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer, Table,
 BANK_NAME_DEFAULT = "KARMASANGSTHAN BANK"
 FONT_REGULAR = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
+BD_TZ = timezone(timedelta(hours=6))  # Bangladesh Standard Time, GMT+6 -- সার্ভারের timezone
+                                       # যাই হোক না কেন, Print Date/Time সবসময় এই timezone-এ দেখানো হয়
 
 # Excel-এর কলাম অর্ডারের সাথে হুবহু মিল রেখে (pdf_processor.write_excel দেখুন)
 COLUMNS = [
@@ -179,16 +181,17 @@ def _apply_union_village_map_filter(rows, union_village_map):
 
 def describe_union_village_selection(union_village_map):
     """UI/টাইটেলে দেখানোর জন্য মানুষ-পড়ার-যোগ্য বর্ণনা বানায়, যেমন:
-    'Joynagar (Village1, Village2), Kashipur' -- Village বাছাই না থাকা Union-এর
-    নামের পাশে কোনো বন্ধনী থাকে না। union_village_map খালি হলে খালি string
-    ফেরত দেয় (মানে সব Union, সব Village)।"""
+    'Joynagar (Partial), Kashipur' -- village নামগুলো সরাসরি না দেখিয়ে, যে Union-এ
+    village বাছাই করা হয়েছে (অর্থাৎ পুরো Union নয়) তার পাশে শুধু '(Partial)' বসে।
+    Village বাছাই না থাকা Union-এর নামের পাশে কোনো চিহ্ন থাকে না। union_village_map
+    খালি হলে খালি string ফেরত দেয় (মানে সব Union, সব Village)।"""
     if not union_village_map:
         return ""
     parts = []
     for u in sorted(union_village_map.keys()):
         vills = union_village_map.get(u) or []
         if vills:
-            parts.append(f"{u} ({', '.join(vills)})")
+            parts.append(f"{u} (Partial)")
         else:
             parts.append(u)
     return ", ".join(parts)
@@ -298,7 +301,7 @@ def group_by_union_village(rows, union_village_map=None, ref_date=None):
 
 def build_output_filename(report_key, union_village_map=None, start=None, end=None, single_date=None):
     """PDF ফাইলের নাম dynamic ভাবে বানায়, যেমন:
-    Overdue_Joynagar-Village1-Village2_Kashipur_15-03-2025_to_30-06-2026.pdf
+    Overdue_Joynagar-Partial_Kashipur_15-03-2025_to_30-06-2026.pdf
     Expired_AllUnion_29-08-2026.pdf
     """
     def _clean(s):
@@ -310,7 +313,7 @@ def build_output_filename(report_key, union_village_map=None, start=None, end=No
         for u in sorted(union_village_map.keys()):
             vills = union_village_map.get(u) or []
             if vills:
-                union_parts.append(_clean(u) + "-" + "-".join(_clean(v) for v in vills))
+                union_parts.append(_clean(u) + "-Partial")
             else:
                 union_parts.append(_clean(u))
         parts.append("_".join(union_parts))
@@ -511,7 +514,7 @@ def generate_report_pdf(rows, out_path, branch_name, title_text,
                 subtotal_style,
             ))
 
-    print_dt_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+    print_dt_str = datetime.now(BD_TZ).strftime("%d/%m/%Y %I:%M %p")
     header_fn = lambda c, d: _draw_header(c, d, bank_name, branch_name, logo_path, title_text, print_dt_str)
     doc.build(elements, onFirstPage=header_fn, onLaterPages=header_fn)
     return out_path
