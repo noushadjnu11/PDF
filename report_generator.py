@@ -56,20 +56,20 @@ COLUMNS = [
     ("union", "Union"),
     ("phone", "Phone"),
     ("overdue_date", "Overdue"),
-    ("installment", "Installment"),
+    ("installment", "Inst."),
     ("bal_principal", "Principal"),
     ("bal_interest", "Interest"),
     ("bal_total", "Balance"),
     ("due_amount", "Due"),
     ("reschedule_no", "Res."),
-    ("blank_col", "Comment"),
+    ("blank_col", "Comm."),
 ]
 
 _AMOUNT_KEYS = {"installment", "bal_principal", "bal_interest", "bal_total", "due_amount"}
 
 # কলামগুলোর আপেক্ষিক প্রস্থ -- সংখ্যা/তারিখ কলাম সরু, নাম/ঠিকানা কলাম চওড়া
 _COLUMN_WEIGHTS = {
-    "prefixed_loan_case": 0.8,
+    "prefixed_loan_case": 1.0,
     "borrower": 1.3,
     "father": 1.3,
     "spouse": 1.3,
@@ -77,11 +77,11 @@ _COLUMN_WEIGHTS = {
     "union": 1.0,
     "phone": 1.15,
     "overdue_date": 0.85,
-    "installment": 0.95,
+    "installment": 0.8,
     "bal_principal": 0.8,
     "bal_interest": 0.7,
     "bal_total": 0.8,
-    "due_amount": 0.65,
+    "due_amount": 0.8,
     "reschedule_no": 0.55,
     "blank_col": 0.8,
 }
