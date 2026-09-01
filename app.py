@@ -25,7 +25,7 @@ import report_generator as rg
 
 st.set_page_config(page_title="Loan PDF Merge Tool", page_icon="🏦", layout="centered")
 
-st.title("🏦 Karmasangsthan Bank — Loan PDF Merge Tool")
+st.title("🏦 Karmasangsthan Bank — Loan PDF Merge Tool By Md. Noushad Ahmed")
 st.caption("Borrower List PDF এবং Loan Balance PDF আপলোড করুন — একটা মার্জড Excel ফাইল পাবেন।")
 
 # ---------------------------------------------------------------------------
@@ -397,7 +397,7 @@ if report_xlsx_path:
                     title_text=title_text, grouped=grouped, summary=summary,
                 )
             row_count = sum(len(g[1]) for g in pdf_rows) if grouped else len(pdf_rows)
-            st.success(f"✅ PDF রেডি ({row_count}টা রো)।")
+            st.success(f"✅ PDF প্রস্তুত: ({row_count}টা রো)।")
             with open(out_pdf, "rb") as f:
                 st.download_button(
                     "⬇️ PDF রিপোর্ট ডাউনলোড করুন",
