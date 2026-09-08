@@ -31,6 +31,7 @@ import pdfplumber
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.formula import ArrayFormula
 
 HEADERS = [
     "DATED", "FI_ID", "FI_BRANCH_ID", "ACCOUNT_NUMBER", "ACCOUNT_HOLDER'S_NAME",
@@ -166,9 +167,21 @@ def parse_nbfi_returns_pdf(path):
 
 
 def build_nbfi_excel(rows, out_path, project_no=23, br_name="", rm_office_name="",
-                      title_text=None):
+                      title_text=None, buffer_rows=1000, max_summary_codes=50):
     """rows: parse_nbfi_returns_pdf()-এর রেজাল্ট। ব্যাংকের ৩৪-কলাম NBFI রিপোর্টিং
-    টেমপ্লেটের মতো header (row 1-4) + data (row 5 থেকে) সহ .xlsx বানায়।"""
+    টেমপ্লেটের মতো header (row 1-4) + data (row 5 থেকে) সহ .xlsx বানায়। সাথে:
+      - যোগফল সারি (আসল টেমপ্লেটের মতো Q-AH কলামের SUM, Project_No/Kormosuchi বাদে)
+      - আসল টেমপ্লেটে যোগফল সারির ২-৩ সারি নিচে যে মিলকরণ-হিসাব আছে (Outstanding
+        বনাম Out Form-এর মতো, Write-off বাদে) সেটাও একইভাবে
+      - Product Type Code (কলাম N) অনুযায়ী সংখ্যা + Outstanding Amount (কলাম Y)-এর
+        যোগফলের একটা সারাংশ টেবিল -- সহায়ক কলাম (COUNTIF/INDEX/MATCH ভিত্তিক, কোনো
+        exotic/array ফর্মুলা ছাড়াই) দিয়ে বানানো, তাই N কলামে ভবিষ্যতে (buffer_rows-এর
+        মধ্যে) নতুন কোড যোগ/পরিবর্তন করলে সারাংশ টেবিল নিজে থেকেই আপডেট হবে।
+    buffer_rows: বর্তমান ডেটার নিচে কত সারি "খালি কিন্তু ফর্মুলা-প্রস্তুত" রাখা হবে,
+        যাতে ভবিষ্যতে সরাসরি Excel-এ নতুন রো/কোড যোগ করলে ধরা পড়ে (ডিফল্ট ১০০০)।
+    max_summary_codes: সারাংশ টেবিলে সর্বোচ্চ কতগুলো ভিন্ন Product Type Code-এর জন্য
+        সারি রাখা হবে (ডিফল্ট ৫০ -- এই কোড সাধারণত একটা ছোট, সীমিত তালিকা)।
+    """
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "NBFI Report"
@@ -220,11 +233,17 @@ def build_nbfi_excel(rows, out_path, project_no=23, br_name="", rm_office_name="
 
     ws.freeze_panes = "A5"
 
-    # --- যোগফল সারি -- আসল ব্যাংক টেমপ্লেটে যেভাবে আছে ঠিক সেভাবেই: Q(17) থেকে AH(34)
+    last_row = start_row + len(rows) - 1 if rows else start_row - 1
+    n_col = get_column_letter(14)   # N -- PRODUCT_TYPE_CODE
+    y_col = get_column_letter(25)   # Y -- OUTSTANDING_AMOUNT
+    end_row = last_row + buffer_rows  # buffer_rows পর্যন্ত ফাঁকা সারিতেও সারাংশ কাজ করবে
+
+    # ---------------------------------------------------------------------
+    # যোগফল সারি -- আসল ব্যাংক টেমপ্লেটে যেভাবে আছে ঠিক সেভাবেই: Q(17) থেকে AH(34)
     # পর্যন্ত প্রতিটা amount কলামের যোগফল (Project_No আর Unic_Kormosuchi_Code_NO বাদে,
-    # যেহেতু ওগুলো কোড, টাকার অংক না) ---
-    last_row = start_row + len(rows) - 1
-    total_row = last_row + 1 if rows else start_row
+    # যেহেতু ওগুলো কোড, টাকার অংক না)
+    # ---------------------------------------------------------------------
+    total_row = last_row + 1
 
     label_cell = ws.cell(row=total_row, column=1, value="Total")
     label_cell.font = bold
@@ -236,42 +255,81 @@ def build_nbfi_excel(rows, out_path, project_no=23, br_name="", rm_office_name="
         cell.font = bold
         cell.number_format = "#,##0"
 
-    # --- বাড়তি সারাংশ টেবিল: Product Type Code (কলাম N)-অনুযায়ী সংখ্যা এবং সেই
-    # রো-গুলোর Overdue/Outstanding (কলাম AB)-এর যোগফল, যেমন: 21031 | 60 | 4,500,000 ---
-    n_col = get_column_letter(14)   # N -- PRODUCT_TYPE_CODE
-    ab_col = get_column_letter(28)  # AB -- Overdue/Outstanding
+    # ---------------------------------------------------------------------
+    # আসল টেমপ্লেটে যোগফল সারির ৩ সারি নিচে যে মিলকরণ-হিসাব আছে (কলাম Y-তে):
+    #   ১) Outstanding (Total সারি থেকে)
+    #   ২) Opening+Disbursed+Accrued+OtherCharges-Recovered-Adjustment (Write-off
+    #      বাদে -- আসল ফাইলেও এভাবেই ছিল, Out Form-এর মতো পুরোপুরি না)
+    #   ৩) (১)-(২) পার্থক্য
+    # সেটা এখানেও একইভাবে বসানো হলো (লেবেলগুলো শুধু স্পষ্টতার জন্য যোগ করা, আসল
+    # ফাইলে লেবেল ছিল না)।
+    # ---------------------------------------------------------------------
+    chk_row1 = total_row + 4
+    chk_row2 = chk_row1 + 1
+    chk_row3 = chk_row1 + 2
 
-    def _criteria(code):
-        return str(code) if isinstance(code, (int, float)) else f'"{code}"'
+    ws.cell(row=chk_row1, column=1, value="Outstanding (Total সারি অনুযায়ী)")
+    ws.cell(row=chk_row1, column=25, value=f"={y_col}{total_row}")
+    ws.cell(row=chk_row1, column=25).number_format = "#,##0"
 
-    codes = sorted(
-        {row.get("PRODUCT_TYPE_CODE") for row in rows if row.get("PRODUCT_TYPE_CODE") is not None},
-        key=lambda v: (isinstance(v, str), v),
-    )
+    ws.cell(row=chk_row2, column=1, value="Out Form Total (Write-off বাদে)")
+    ws.cell(row=chk_row2, column=25,
+            value=f"=R{total_row}+S{total_row}+U{total_row}+V{total_row}-T{total_row}-W{total_row}")
+    ws.cell(row=chk_row2, column=25).number_format = "#,##0"
 
-    summary_start = total_row + 3
+    ws.cell(row=chk_row3, column=1, value="পার্থক্য (Diff)")
+    ws.cell(row=chk_row3, column=25, value=f"=Y{chk_row1}-Y{chk_row2}")
+    ws.cell(row=chk_row3, column=25).number_format = "#,##0"
+
+    # ---------------------------------------------------------------------
+    # Product Type Code (কলাম N) অনুযায়ী সারাংশ -- Count + Outstanding Amount
+    # (কলাম Y)-এর যোগফল। কোনো বাড়তি কলাম মূল ডেটাতে যোগ করা হয়নি -- সারাংশ
+    # টেবিলের নিজের Column A-ই "এখন পর্যন্ত কোন কোডগুলো বের করা হয়েছে" তার
+    # স্মৃতি হিসেবে কাজ করে (ক্লাসিক "unique list via array formula" কৌশল), তাই
+    # N কলামে (buffer_rows-এর মধ্যে) নতুন কোড যোগ/পরিবর্তন করলে এই টেবিল নিজে
+    # থেকেই তা ধরে আপডেট হবে।
+    # ---------------------------------------------------------------------
+    summary_start = chk_row3 + 3
     heading_cell = ws.cell(row=summary_start, column=1,
                             value="Product Type Code (Column N) অনুযায়ী সারাংশ")
     heading_cell.font = Font(bold=True, size=11)
 
     hdr_row = summary_start + 1
-    for idx, h in enumerate(["Product Type Code", "সংখ্যা (Count)", "Overdue/Outstanding (AB) যোগফল"], start=1):
+    for idx, h in enumerate(["Product Type Code", "সংখ্যা (Count)", "Outstanding Amount (Y) যোগফল"], start=1):
         c = ws.cell(row=hdr_row, column=idx, value=h)
         c.font = bold
         c.fill = green_fill
         c.alignment = center_wrap
 
-    for i, code in enumerate(codes):
-        r = hdr_row + 1 + i
-        ws.cell(row=r, column=1, value=code)
-        ws.cell(row=r, column=2,
-                value=f"=COUNTIF({n_col}{start_row}:{n_col}{last_row},{_criteria(code)})")
+    for k in range(1, max_summary_codes + 1):
+        r = hdr_row + k
+        already_extracted_range = f"$A${hdr_row}:A{r - 1}"
+        array_formula_text = (
+            f'=IFERROR(INDEX(${n_col}${start_row}:${n_col}${end_row},'
+            f'MATCH(0,IF(${n_col}${start_row}:${n_col}${end_row}="",1,'
+            f'COUNTIF({already_extracted_range},${n_col}${start_row}:${n_col}${end_row})),0)),"")'
+        )
+        ws.cell(row=r, column=1, value=ArrayFormula(ref=f"A{r}", text=array_formula_text))
+        ws.cell(
+            row=r, column=2,
+            value=f'=IF($A{r}="","",COUNTIF(${n_col}${start_row}:${n_col}${end_row},$A{r}))',
+        )
         sum_cell = ws.cell(
             row=r, column=3,
-            value=f"=SUMIF({n_col}{start_row}:{n_col}{last_row},{_criteria(code)},"
-                  f"{ab_col}{start_row}:{ab_col}{last_row})",
+            value=(f'=IF($A{r}="","",SUMIF(${n_col}${start_row}:${n_col}${end_row},$A{r},'
+                    f'${y_col}${start_row}:${y_col}${end_row}))'),
         )
         sum_cell.number_format = "#,##0"
+
+    summary_last_row = hdr_row + max_summary_codes
+    summary_total_row = summary_last_row + 1
+    ws.cell(row=summary_total_row, column=1, value="Total").font = bold
+    ws.cell(row=summary_total_row, column=2,
+            value=f"=SUM(B{hdr_row + 1}:B{summary_last_row})").font = bold
+    total_amt_cell = ws.cell(row=summary_total_row, column=3,
+                              value=f"=SUM(C{hdr_row + 1}:C{summary_last_row})")
+    total_amt_cell.font = bold
+    total_amt_cell.number_format = "#,##0"
 
     wb.save(out_path)
     return out_path
