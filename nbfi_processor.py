@@ -31,7 +31,7 @@ import pdfplumber
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.formula import ArrayFormula
+from openpyxl.formatting.rule import FormulaRule
 
 HEADERS = [
     "DATED", "FI_ID", "FI_BRANCH_ID", "ACCOUNT_NUMBER", "ACCOUNT_HOLDER'S_NAME",
@@ -128,7 +128,11 @@ def parse_nbfi_returns_pdf(path):
                     acc_raw = (r[4] or "").strip()
                     if "." in acc_raw:
                         try:
-                            acc_num = float(acc_raw)
+                            f = float(acc_raw)
+                            # দশমিক অংশ আসলে শূন্য হলে (যেমন কখনো "....142.0" জাতীয়
+                            # কিছু PDF-এ এসে থাকলে) int-এ নামিয়ে আনা হয়, যাতে Excel-এ
+                            # ভুলেও ".0" না দেখায়। আসল দশমিক (.1, .2 ইত্যাদি) অক্ষুণ্ণ থাকে।
+                            acc_num = int(f) if f == int(f) else f
                         except ValueError:
                             acc_num = acc_raw
                     else:
@@ -167,20 +171,15 @@ def parse_nbfi_returns_pdf(path):
 
 
 def build_nbfi_excel(rows, out_path, project_no=23, br_name="", rm_office_name="",
-                      title_text=None, buffer_rows=1000, max_summary_codes=50):
+                      title_text=None):
     """rows: parse_nbfi_returns_pdf()-এর রেজাল্ট। ব্যাংকের ৩৪-কলাম NBFI রিপোর্টিং
     টেমপ্লেটের মতো header (row 1-4) + data (row 5 থেকে) সহ .xlsx বানায়। সাথে:
       - যোগফল সারি (আসল টেমপ্লেটের মতো Q-AH কলামের SUM, Project_No/Kormosuchi বাদে)
       - আসল টেমপ্লেটে যোগফল সারির ২-৩ সারি নিচে যে মিলকরণ-হিসাব আছে (Outstanding
         বনাম Out Form-এর মতো, Write-off বাদে) সেটাও একইভাবে
       - Product Type Code (কলাম N) অনুযায়ী সংখ্যা + Outstanding Amount (কলাম Y)-এর
-        যোগফলের একটা সারাংশ টেবিল -- সহায়ক কলাম (COUNTIF/INDEX/MATCH ভিত্তিক, কোনো
-        exotic/array ফর্মুলা ছাড়াই) দিয়ে বানানো, তাই N কলামে ভবিষ্যতে (buffer_rows-এর
-        মধ্যে) নতুন কোড যোগ/পরিবর্তন করলে সারাংশ টেবিল নিজে থেকেই আপডেট হবে।
-    buffer_rows: বর্তমান ডেটার নিচে কত সারি "খালি কিন্তু ফর্মুলা-প্রস্তুত" রাখা হবে,
-        যাতে ভবিষ্যতে সরাসরি Excel-এ নতুন রো/কোড যোগ করলে ধরা পড়ে (ডিফল্ট ১০০০)।
-    max_summary_codes: সারাংশ টেবিলে সর্বোচ্চ কতগুলো ভিন্ন Product Type Code-এর জন্য
-        সারি রাখা হবে (ডিফল্ট ৫০ -- এই কোড সাধারণত একটা ছোট, সীমিত তালিকা)।
+        যোগফলের একটা সারাংশ টেবিল -- N কলামে বর্তমানে যা আছে শুধু তারই যোগফল
+        (COUNTIF/SUMIF ফর্মুলা দিয়ে, হার্ডকোড সংখ্যা না), নিচে Total সারিসহ।
     """
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -223,6 +222,7 @@ def build_nbfi_excel(rows, out_path, project_no=23, br_name="", rm_office_name="
 
         ws.cell(row=r, column=1).number_format = "DD-MMM-YY"
         ws.cell(row=r, column=6).number_format = "DD-MMM-YY"
+        ws.cell(row=r, column=4).number_format = "General"  # যাতে কখনো ".0" যোগ না হয়
         for col in _AMOUNT_COLS:
             ws.cell(row=r, column=col).number_format = "#,##0"
 
@@ -236,7 +236,6 @@ def build_nbfi_excel(rows, out_path, project_no=23, br_name="", rm_office_name="
     last_row = start_row + len(rows) - 1 if rows else start_row - 1
     n_col = get_column_letter(14)   # N -- PRODUCT_TYPE_CODE
     y_col = get_column_letter(25)   # Y -- OUTSTANDING_AMOUNT
-    end_row = last_row + buffer_rows  # buffer_rows পর্যন্ত ফাঁকা সারিতেও সারাংশ কাজ করবে
 
     # ---------------------------------------------------------------------
     # যোগফল সারি -- আসল ব্যাংক টেমপ্লেটে যেভাবে আছে ঠিক সেভাবেই: Q(17) থেকে AH(34)
@@ -282,13 +281,20 @@ def build_nbfi_excel(rows, out_path, project_no=23, br_name="", rm_office_name="
     ws.cell(row=chk_row3, column=25).number_format = "#,##0"
 
     # ---------------------------------------------------------------------
-    # Product Type Code (কলাম N) অনুযায়ী সারাংশ -- Count + Outstanding Amount
-    # (কলাম Y)-এর যোগফল। কোনো বাড়তি কলাম মূল ডেটাতে যোগ করা হয়নি -- সারাংশ
-    # টেবিলের নিজের Column A-ই "এখন পর্যন্ত কোন কোডগুলো বের করা হয়েছে" তার
-    # স্মৃতি হিসেবে কাজ করে (ক্লাসিক "unique list via array formula" কৌশল), তাই
-    # N কলামে (buffer_rows-এর মধ্যে) নতুন কোড যোগ/পরিবর্তন করলে এই টেবিল নিজে
-    # থেকেই তা ধরে আপডেট হবে।
+    # Product Type Code (কলাম N) অনুযায়ী সারাংশ -- N কলামে বর্তমানে যেসব কোড
+    # বিদ্যমান, শুধু সেগুলোর Count আর Outstanding Amount (কলাম Y)-এর যোগফল।
+    # কোনো বাড়তি কলাম মূল ডেটাতে যোগ করা হয়নি। COUNTIF/SUMIF ফর্মুলা দিয়ে
+    # প্রকৃত ডেটা-রেঞ্জ (start_row:last_row) থেকে হিসাব হয় (হার্ডকোড সংখ্যা না),
+    # তবে নতুন কোড এখানে অটো-যোগ হয় না -- শুধু এখন যা আছে তারই যোগফল।
     # ---------------------------------------------------------------------
+    codes = sorted(
+        {row.get("PRODUCT_TYPE_CODE") for row in rows if row.get("PRODUCT_TYPE_CODE") is not None},
+        key=lambda v: (isinstance(v, str), v),
+    )
+
+    def _criteria(code):
+        return str(code) if isinstance(code, (int, float)) else f'"{code}"'
+
     summary_start = chk_row3 + 3
     heading_cell = ws.cell(row=summary_start, column=1,
                             value="Product Type Code (Column N) অনুযায়ী সারাংশ")
@@ -301,27 +307,19 @@ def build_nbfi_excel(rows, out_path, project_no=23, br_name="", rm_office_name="
         c.fill = green_fill
         c.alignment = center_wrap
 
-    for k in range(1, max_summary_codes + 1):
-        r = hdr_row + k
-        already_extracted_range = f"$A${hdr_row}:A{r - 1}"
-        array_formula_text = (
-            f'=IFERROR(INDEX(${n_col}${start_row}:${n_col}${end_row},'
-            f'MATCH(0,IF(${n_col}${start_row}:${n_col}${end_row}="",1,'
-            f'COUNTIF({already_extracted_range},${n_col}${start_row}:${n_col}${end_row})),0)),"")'
-        )
-        ws.cell(row=r, column=1, value=ArrayFormula(ref=f"A{r}", text=array_formula_text))
-        ws.cell(
-            row=r, column=2,
-            value=f'=IF($A{r}="","",COUNTIF(${n_col}${start_row}:${n_col}${end_row},$A{r}))',
-        )
+    for i, code in enumerate(codes):
+        r = hdr_row + 1 + i
+        ws.cell(row=r, column=1, value=code)
+        ws.cell(row=r, column=2,
+                value=f"=COUNTIF({n_col}{start_row}:{n_col}{last_row},{_criteria(code)})")
         sum_cell = ws.cell(
             row=r, column=3,
-            value=(f'=IF($A{r}="","",SUMIF(${n_col}${start_row}:${n_col}${end_row},$A{r},'
-                    f'${y_col}${start_row}:${y_col}${end_row}))'),
+            value=(f"=SUMIF({n_col}{start_row}:{n_col}{last_row},{_criteria(code)},"
+                   f"{y_col}{start_row}:{y_col}{last_row})"),
         )
         sum_cell.number_format = "#,##0"
 
-    summary_last_row = hdr_row + max_summary_codes
+    summary_last_row = hdr_row + len(codes)
     summary_total_row = summary_last_row + 1
     ws.cell(row=summary_total_row, column=1, value="Total").font = bold
     ws.cell(row=summary_total_row, column=2,
@@ -330,6 +328,87 @@ def build_nbfi_excel(rows, out_path, project_no=23, br_name="", rm_office_name="
                               value=f"=SUM(C{hdr_row + 1}:C{summary_last_row})")
     total_amt_cell.font = bold
     total_amt_cell.number_format = "#,##0"
+
+    # ---------------------------------------------------------------------
+    # দ্বিতীয় সারাংশ (প্রথম টেবিলের পাশেই, ১ কলাম গ্যাপ দিয়ে): Unique Kormosuchi
+    # Code (কলাম AD) অনুযায়ী Employee Loan (কোড 6/10/13/14) বনাম Non Employee Loan
+    # (বাকি সব কোড) -- Account Number কলাম (D) থেকে গণনা (কাউন্ট), আর Outstanding
+    # Amount (কলাম Y)-এর যোগফল। নিচে দুটোর Total সারি।
+    # ---------------------------------------------------------------------
+    acc_col = get_column_letter(4)    # D -- ACCOUNT_NUMBER
+    ad_col = get_column_letter(30)    # AD -- Unic_Kormosuchi_Code_NO
+    emp_codes = [6, 10, 13, 14]
+    emp_cond = "+".join(f"({ad_col}{start_row}:{ad_col}{last_row}={c})" for c in emp_codes)
+    non_emp_cond = "*".join(f"({ad_col}{start_row}:{ad_col}{last_row}<>{c})" for c in emp_codes)
+
+    t2_col1, t2_col2, t2_col3 = 5, 6, 7  # E, F, G -- প্রথম টেবিলের পর ১ কলাম (D) গ্যাপ
+
+    ws.merge_cells(start_row=summary_start, start_column=t2_col1,
+                    end_row=summary_start, end_column=t2_col3)
+    t2_heading = ws.cell(row=summary_start, column=t2_col1,
+                          value="Employee vs Non Employee Loan (Unique Kormosuchi Code অনুযায়ী)")
+    t2_heading.font = Font(bold=True, size=11)
+
+    for idx, h in zip([t2_col1, t2_col2, t2_col3],
+                       ["ক্যাটাগরি", "সংখ্যা (Count)", "Outstanding Amount (Y) যোগফল"]):
+        c = ws.cell(row=hdr_row, column=idx, value=h)
+        c.font = bold
+        c.fill = green_fill
+        c.alignment = center_wrap
+
+    emp_row = hdr_row + 1
+    non_emp_row = hdr_row + 2
+    t2_total_row = hdr_row + 3
+
+    ws.cell(row=emp_row, column=t2_col1, value="Employee Loan")
+    ws.cell(row=emp_row, column=t2_col2,
+            value=f"=SUMPRODUCT(({acc_col}{start_row}:{acc_col}{last_row}<>\"\")*({emp_cond}))")
+    emp_sum_cell = ws.cell(
+        row=emp_row, column=t2_col3,
+        value=(f"=SUMPRODUCT(({acc_col}{start_row}:{acc_col}{last_row}<>\"\")*({emp_cond})*"
+               f"{y_col}{start_row}:{y_col}{last_row})"),
+    )
+    emp_sum_cell.number_format = "#,##0"
+
+    ws.cell(row=non_emp_row, column=t2_col1, value="Non Employee Loan")
+    ws.cell(
+        row=non_emp_row, column=t2_col2,
+        value=(f"=SUMPRODUCT(({acc_col}{start_row}:{acc_col}{last_row}<>\"\")*"
+               f"({ad_col}{start_row}:{ad_col}{last_row}<>\"\")*({non_emp_cond}))"),
+    )
+    non_emp_sum_cell = ws.cell(
+        row=non_emp_row, column=t2_col3,
+        value=(f"=SUMPRODUCT(({acc_col}{start_row}:{acc_col}{last_row}<>\"\")*"
+               f"({ad_col}{start_row}:{ad_col}{last_row}<>\"\")*({non_emp_cond})*"
+               f"{y_col}{start_row}:{y_col}{last_row})"),
+    )
+    non_emp_sum_cell.number_format = "#,##0"
+
+    t2_col2_letter = get_column_letter(t2_col2)
+    t2_col3_letter = get_column_letter(t2_col3)
+    ws.cell(row=t2_total_row, column=t2_col1, value="Total").font = bold
+    ws.cell(row=t2_total_row, column=t2_col2,
+            value=f"=SUM({t2_col2_letter}{emp_row}:{t2_col2_letter}{non_emp_row})").font = bold
+    t2_total_amt = ws.cell(
+        row=t2_total_row, column=t2_col3,
+        value=f"=SUM({t2_col3_letter}{emp_row}:{t2_col3_letter}{non_emp_row})",
+    )
+    t2_total_amt.font = bold
+    t2_total_amt.number_format = "#,##0"
+
+    # ---------------------------------------------------------------------
+    # মূল ডেটা রেঞ্জে (row 5 থেকে শেষ ডেটা-রো পর্যন্ত, A-AH কলাম) যেসব সেল ফাঁকা,
+    # সেগুলো লাল করে দেখানো হলো (Conditional Formatting -- তাই পরে কেউ কোনো সেল
+    # খালি করে দিলেও সাথে সাথে লাল হয়ে ধরা পড়বে)।
+    # ---------------------------------------------------------------------
+    if rows:
+        red_fill = PatternFill("solid", fgColor="FF0000")
+        last_col_letter = get_column_letter(len(HEADERS))
+        data_range = f"A{start_row}:{last_col_letter}{last_row}"
+        ws.conditional_formatting.add(
+            data_range,
+            FormulaRule(formula=[f"ISBLANK(A{start_row})"], fill=red_fill),
+        )
 
     wb.save(out_path)
     return out_path
