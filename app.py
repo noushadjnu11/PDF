@@ -9,7 +9,7 @@ Karmasangsthan Bank — Loan PDF Merge Tool (Streamlit App)
 
 import os
 import tempfile
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
@@ -22,420 +22,513 @@ from pdf_processor import (
     write_excel,
 )
 import report_generator as rg
+import nbfi_processor as nbp
 
-st.set_page_config(page_title="Loan PDF Merge Tool", page_icon="🏦", layout="centered")
+st.set_page_config(page_title="Karmasangsthan Bank — Reporting Tools", page_icon="🏦", layout="centered")
 
-st.title("🏦 Karmasangsthan Bank — Loan PDF Merge Tool")
-st.caption("Borrower List PDF এবং Loan Balance PDF আপলোড করুন — একটা মার্জড Excel ফাইল পাবেন।")
+st.title("🏦 Karmasangsthan Bank — Reporting Tools")
+st.caption("নিচে থেকে কাজ অনুযায়ী ট্যাব বেছে নিন।")
 
-# ---------------------------------------------------------------------------
-# সেশন স্টেট ইনিশিয়ালাইজ
-# ---------------------------------------------------------------------------
-for key, default in [
-    ("borrower_rows", None), ("balance_rows", None),
-    ("programs", None), ("scanned", False), ("merged_xlsx_path", None),
-]:
-    if key not in st.session_state:
-        st.session_state[key] = default
-
-
-# ---------------------------------------------------------------------------
-# ধাপ ১: PDF আপলোড
-# ---------------------------------------------------------------------------
-st.header("ধাপ ১ — PDF আপলোড করুন")
-
-col1, col2 = st.columns(2)
-with col1:
-    borrower_file = st.file_uploader("Borrower List PDF", type="pdf", key="borrower_upload")
-with col2:
-    balance_file = st.file_uploader("Loan Balance PDF", type="pdf", key="balance_upload")
+def render_loan_merge_tab():
+    """ধাপ ১-৪: Loan PDF মার্জ করে Excel + Union/Village/Overdue ইত্যাদি রিপোর্ট বানানোর পুরো টুল।"""
+    st.caption("Borrower List PDF এবং Loan Balance PDF আপলোড করুন — একটা মার্জড Excel ফাইল পাবেন।")
+    # ---------------------------------------------------------------------------
+    # সেশন স্টেট ইনিশিয়ালাইজ
+    # ---------------------------------------------------------------------------
+    for key, default in [
+        ("borrower_rows", None), ("balance_rows", None),
+        ("programs", None), ("scanned", False), ("merged_xlsx_path", None),
+    ]:
+        if key not in st.session_state:
+            st.session_state[key] = default
 
 
-def save_temp(uploaded_file):
-    suffix = ".pdf"
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(uploaded_file.getbuffer())
-    tmp.close()
-    return tmp.name
+    # ---------------------------------------------------------------------------
+    # ধাপ ১: PDF আপলোড
+    # ---------------------------------------------------------------------------
+    st.header("ধাপ ১ — PDF আপলোড করুন")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        borrower_file = st.file_uploader("Borrower List PDF", type="pdf", key="borrower_upload")
+    with col2:
+        balance_file = st.file_uploader("Loan Balance PDF", type="pdf", key="balance_upload")
 
 
-# ---------------------------------------------------------------------------
-# ধাপ ২: PDF স্ক্যান করে Loan Program-এর তালিকা বের করা (prefix দেখানো/এডিট করার জন্য)
-# ---------------------------------------------------------------------------
-st.header("ধাপ ২ — Loan Program ও Prefix যাচাই করুন")
+    def save_temp(uploaded_file):
+        suffix = ".pdf"
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        tmp.write(uploaded_file.getbuffer())
+        tmp.close()
+        return tmp.name
 
-scan_btn = st.button("🔍 PDF স্ক্যান করুন", type="primary",
-                      disabled=not (borrower_file and balance_file))
 
-if scan_btn:
-    with st.spinner("PDF পড়া হচ্ছে... (কিছুক্ষণ সময় লাগতে পারে)"):
-        b_path = save_temp(borrower_file)
-        l_path = save_temp(balance_file)
-        try:
-            borrower_rows, borrower_programs = parse_borrower_list_pdf(b_path)
-            balance_rows, balance_programs = parse_loan_balance_pdf(l_path)
-        finally:
-            os.unlink(b_path)
-            os.unlink(l_path)
+    # ---------------------------------------------------------------------------
+    # ধাপ ২: PDF স্ক্যান করে Loan Program-এর তালিকা বের করা (prefix দেখানো/এডিট করার জন্য)
+    # ---------------------------------------------------------------------------
+    st.header("ধাপ ২ — Loan Program ও Prefix যাচাই করুন")
 
-        all_programs = {**balance_programs, **borrower_programs}
-        auto_prefix_map = build_prefix_map(all_programs)
+    scan_btn = st.button("🔍 PDF স্ক্যান করুন", type="primary",
+                          disabled=not (borrower_file and balance_file))
 
-        st.session_state["borrower_rows"] = borrower_rows
-        st.session_state["balance_rows"] = balance_rows
-        st.session_state["programs"] = all_programs
-        st.session_state["auto_prefix"] = auto_prefix_map
-        st.session_state["scanned"] = True
+    if scan_btn:
+        with st.spinner("PDF পড়া হচ্ছে... (কিছুক্ষণ সময় লাগতে পারে)"):
+            b_path = save_temp(borrower_file)
+            l_path = save_temp(balance_file)
+            try:
+                borrower_rows, borrower_programs = parse_borrower_list_pdf(b_path)
+                balance_rows, balance_programs = parse_loan_balance_pdf(l_path)
+            finally:
+                os.unlink(b_path)
+                os.unlink(l_path)
 
-    st.success(f"স্ক্যান সম্পন্ন। Borrower List-এ {len(borrower_rows)}টা এবং "
-               f"Loan Balance-এ {len(balance_rows)}টা লোন কেস পাওয়া গেছে।")
+            all_programs = {**balance_programs, **borrower_programs}
+            auto_prefix_map = build_prefix_map(all_programs)
 
-if st.session_state["scanned"]:
-    programs = st.session_state["programs"]
-    auto_prefix = st.session_state["auto_prefix"]
+            st.session_state["borrower_rows"] = borrower_rows
+            st.session_state["balance_rows"] = balance_rows
+            st.session_state["programs"] = all_programs
+            st.session_state["auto_prefix"] = auto_prefix_map
+            st.session_state["scanned"] = True
 
-    st.write("নিচের তালিকায় প্রতিটা Loan Program-এর জন্য স্বয়ংক্রিয়ভাবে একটা Prefix বসানো হয়েছে। "
-             "প্রয়োজনে **Prefix** কলামে ক্লিক করে নিজের মতো বদলে দিতে পারেন।")
+        st.success(f"স্ক্যান সম্পন্ন। Borrower List-এ {len(borrower_rows)}টা এবং "
+                   f"Loan Balance-এ {len(balance_rows)}টা লোন কেস পাওয়া গেছে।")
 
-    st.caption("আগে ডাউনলোড করা Prefix তালিকার CSV থাকলে এখানে আপলোড করে দিলে সেটা থেকেই বসে যাবে।")
-    prefix_csv_file = st.file_uploader("Prefix তালিকার CSV আপলোড করুন (ঐচ্ছিক)",
-                                        type="csv", key="prefix_csv_upload")
+    if st.session_state["scanned"]:
+        programs = st.session_state["programs"]
+        auto_prefix = st.session_state["auto_prefix"]
 
-    uploaded_prefix_map = {}
-    csv_ok = False
-    if prefix_csv_file is not None:
-        try:
-            csv_df = pd.read_csv(prefix_csv_file, dtype=str).fillna("")
-            code_col, prefix_col = "প্রোগ্রাম কোড", "Prefix"
-            if code_col in csv_df.columns and prefix_col in csv_df.columns:
-                uploaded_prefix_map = dict(zip(csv_df[code_col], csv_df[prefix_col]))
-                csv_ok = True
+        st.write("নিচের তালিকায় প্রতিটা Loan Program-এর জন্য স্বয়ংক্রিয়ভাবে একটা Prefix বসানো হয়েছে। "
+                 "প্রয়োজনে **Prefix** কলামে ক্লিক করে নিজের মতো বদলে দিতে পারেন।")
+
+        st.caption("আগে ডাউনলোড করা Prefix তালিকার CSV থাকলে এখানে আপলোড করে দিলে সেটা থেকেই বসে যাবে।")
+        prefix_csv_file = st.file_uploader("Prefix তালিকার CSV আপলোড করুন (ঐচ্ছিক)",
+                                            type="csv", key="prefix_csv_upload")
+
+        uploaded_prefix_map = {}
+        csv_ok = False
+        if prefix_csv_file is not None:
+            try:
+                csv_df = pd.read_csv(prefix_csv_file, dtype=str).fillna("")
+                code_col, prefix_col = "প্রোগ্রাম কোড", "Prefix"
+                if code_col in csv_df.columns and prefix_col in csv_df.columns:
+                    uploaded_prefix_map = dict(zip(csv_df[code_col], csv_df[prefix_col]))
+                    csv_ok = True
+                else:
+                    st.error("CSV ফরম্যাট সঠিক নয় — 'প্রোগ্রাম কোড' এবং 'Prefix' নামে কলাম থাকা দরকার।")
+            except Exception as e:
+                st.error(f"CSV ফাইল পড়তে সমস্যা হয়েছে: {e}")
+
+        missing_programs = []
+        if csv_ok:
+            missing_programs = [
+                (code, name) for code, name in sorted(programs.items())
+                if code not in uploaded_prefix_map or not str(uploaded_prefix_map[code]).strip()
+            ]
+            if missing_programs:
+                missing_list_html = "".join(
+                    f"<li><b>{code}</b> — {name}</li>" for code, name in missing_programs
+                )
+                st.markdown(
+                    "<div style='color:#D32F2F; font-weight:bold;'>⚠️ আপলোড করা CSV-তে নিচের "
+                    "প্রোগ্রামগুলোর Prefix পাওয়া যায়নি — এগুলো নিচের তালিকায় লাল চিহ্নিত, "
+                    "নিজে থেকে Prefix বসিয়ে ঠিক করে দিন:</div>"
+                    f"<ul style='color:#D32F2F;'>{missing_list_html}</ul>",
+                    unsafe_allow_html=True,
+                )
             else:
-                st.error("CSV ফরম্যাট সঠিক নয় — 'প্রোগ্রাম কোড' এবং 'Prefix' নামে কলাম থাকা দরকার।")
-        except Exception as e:
-            st.error(f"CSV ফাইল পড়তে সমস্যা হয়েছে: {e}")
+                st.success("✅ CSV থেকে সব প্রোগ্রামের Prefix পাওয়া গেছে।")
 
-    missing_programs = []
-    if csv_ok:
-        missing_programs = [
-            (code, name) for code, name in sorted(programs.items())
-            if code not in uploaded_prefix_map or not str(uploaded_prefix_map[code]).strip()
-        ]
-        if missing_programs:
-            missing_list_html = "".join(
-                f"<li><b>{code}</b> — {name}</li>" for code, name in missing_programs
-            )
-            st.markdown(
-                "<div style='color:#D32F2F; font-weight:bold;'>⚠️ আপলোড করা CSV-তে নিচের "
-                "প্রোগ্রামগুলোর Prefix পাওয়া যায়নি — এগুলো নিচের তালিকায় লাল চিহ্নিত, "
-                "নিজে থেকে Prefix বসিয়ে ঠিক করে দিন:</div>"
-                f"<ul style='color:#D32F2F;'>{missing_list_html}</ul>",
-                unsafe_allow_html=True,
-            )
+        missing_codes = {code for code, _ in missing_programs}
+
+        df = pd.DataFrame([
+            {
+                "স্ট্যাটাস": "⚠️ মিসিং" if code in missing_codes else "",
+                "প্রোগ্রাম কোড": code,
+                "প্রোগ্রামের নাম": name,
+                "Prefix": uploaded_prefix_map.get(code) or auto_prefix.get(code, code),
+            }
+            for code, name in sorted(programs.items())
+        ])
+
+        edited_df = st.data_editor(
+            df,
+            column_config={
+                "স্ট্যাটাস": st.column_config.TextColumn(disabled=True, help="CSV আপলোডের পর মিসিং প্রোগ্রাম এখানে দেখাবে"),
+                "প্রোগ্রাম কোড": st.column_config.TextColumn(disabled=True),
+                "প্রোগ্রামের নাম": st.column_config.TextColumn(disabled=True),
+                "Prefix": st.column_config.TextColumn(help="এই প্রোগ্রামের লোন কেসগুলোর সামনে এই prefix বসবে"),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="prefix_editor",
+        )
+
+        prefix_overrides = dict(zip(edited_df["প্রোগ্রাম কোড"], edited_df["Prefix"]))
+
+        csv_export = edited_df[["প্রোগ্রাম কোড", "প্রোগ্রামের নাম", "Prefix"]].to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "⬇️ Prefix তালিকা CSV আকারে ডাউনলোড করুন",
+            data=csv_export,
+            file_name="prefix_list.csv",
+            mime="text/csv",
+        )
+
+        # ---------------------------------------------------------------------------
+        # ধাপ ৩: মার্জ করে Excel বানানো
+        # ---------------------------------------------------------------------------
+        st.header("ধাপ ৩ — Merge করে Excel বানান")
+
+        if st.button("✅ Merge করে Excel তৈরি করুন", type="primary"):
+            with st.spinner("মার্জ করা হচ্ছে..."):
+                final_prefix_map = build_prefix_map(programs, overrides=prefix_overrides)
+                merged = merge_sources(
+                    st.session_state["borrower_rows"],
+                    st.session_state["balance_rows"],
+                    final_prefix_map,
+                )
+                out_path = os.path.join(tempfile.gettempdir(), "merged_loan_report.xlsx")
+                stats = write_excel(merged, out_path)
+
+            st.success("✅ সম্পন্ন! নিচে ডাউনলোড করুন।")
+
+            c1, c2 = st.columns(2)
+            c1.metric("মোট রো", stats["total_rows"])
+            c2.metric("⚠ ম্যানুয়াল যাচাই দরকার এমন রো", stats["needs_review"])
+
+            if stats["needs_review"] > 0:
+                st.warning(
+                    f"{stats['needs_review']}টা রো-তে নাম একাধিক লাইনে ভাগ হয়ে যাওয়ায় "
+                    f"Father/Spouse/Village সঠিকভাবে আলাদা করা যায়নি। এই রো-গুলো Excel-এ "
+                    f"হলুদ রঙে চিহ্নিত এবং 'নোট' কলামে কারণ লেখা আছে — একবার চোখ বুলিয়ে "
+                    f"দেখে নেবেন।"
+                )
+
+            with open(out_path, "rb") as f:
+                st.download_button(
+                    "⬇️ Excel ফাইল ডাউনলোড করুন",
+                    data=f.read(),
+                    file_name="merged_loan_report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                )
+
+            st.session_state["merged_xlsx_path"] = out_path
+    else:
+        st.info("প্রথমে দুইটা PDF আপলোড করে 'PDF স্ক্যান করুন' বাটনে ক্লিক করুন।")
+
+
+    # ---------------------------------------------------------------------------
+    # ধাপ ৪: Excel থেকে ফিল্টার করে A4 Landscape PDF রিপোর্ট বানানো
+    # ---------------------------------------------------------------------------
+    st.header("ধাপ ৪ — PDF রিপোর্ট জেনারেট করুন")
+
+    report_source = st.radio(
+        "কোন Excel থেকে রিপোর্ট বানাবেন?",
+        ["এইমাত্র মার্জ করা Excel (উপরে)", "অন্য একটা Excel আপলোড করুন (সংশোধিত ফাইল)"],
+        horizontal=True,
+    )
+
+    report_xlsx_path = None
+    if report_source == "এইমাত্র মার্জ করা Excel (উপরে)":
+        if st.session_state.get("merged_xlsx_path"):
+            report_xlsx_path = st.session_state["merged_xlsx_path"]
         else:
-            st.success("✅ CSV থেকে সব প্রোগ্রামের Prefix পাওয়া গেছে।")
+            st.info("এখনো কোনো Excel মার্জ করা হয়নি — আগে ধাপ ৩ সম্পন্ন করুন, অথবা ডানের অপশনে "
+                     "নিজের Excel আপলোড করুন।")
+    else:
+        uploaded_xlsx = st.file_uploader(
+            "সংশোধিত Excel ফাইল আপলোড করুন (Father/Village/Union ঠিক করা)",
+            type=["xlsx"], key="report_xlsx_upload",
+        )
+        if uploaded_xlsx:
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+            tmp.write(uploaded_xlsx.getbuffer())
+            tmp.close()
+            report_xlsx_path = tmp.name
 
-    missing_codes = {code for code, _ in missing_programs}
+    if report_xlsx_path:
+        try:
+            report_rows = rg.read_merged_excel(report_xlsx_path)
+        except Exception as e:
+            st.error(f"Excel পড়তে সমস্যা হয়েছে: {e}")
+            report_rows = None
 
-    df = pd.DataFrame([
-        {
-            "স্ট্যাটাস": "⚠️ মিসিং" if code in missing_codes else "",
-            "প্রোগ্রাম কোড": code,
-            "প্রোগ্রামের নাম": name,
-            "Prefix": uploaded_prefix_map.get(code) or auto_prefix.get(code, code),
-        }
-        for code, name in sorted(programs.items())
-    ])
+        if report_rows is not None:
+            st.success(f"{len(report_rows)}টা রো পাওয়া গেছে।")
 
-    edited_df = st.data_editor(
-        df,
-        column_config={
-            "স্ট্যাটাস": st.column_config.TextColumn(disabled=True, help="CSV আপলোডের পর মিসিং প্রোগ্রাম এখানে দেখাবে"),
-            "প্রোগ্রাম কোড": st.column_config.TextColumn(disabled=True),
-            "প্রোগ্রামের নাম": st.column_config.TextColumn(disabled=True),
-            "Prefix": st.column_config.TextColumn(help="এই প্রোগ্রামের লোন কেসগুলোর সামনে এই prefix বসবে"),
-        },
-        hide_index=True,
-        use_container_width=True,
-        key="prefix_editor",
-    )
+            branch_name = st.text_input("ব্রাঞ্চের নাম", value="")
 
-    prefix_overrides = dict(zip(edited_df["প্রোগ্রাম কোড"], edited_df["Prefix"]))
-
-    csv_export = edited_df[["প্রোগ্রাম কোড", "প্রোগ্রামের নাম", "Prefix"]].to_csv(index=False).encode("utf-8-sig")
-    st.download_button(
-        "⬇️ Prefix তালিকা CSV আকারে ডাউনলোড করুন",
-        data=csv_export,
-        file_name="prefix_list.csv",
-        mime="text/csv",
-    )
-
-    # ---------------------------------------------------------------------------
-    # ধাপ ৩: মার্জ করে Excel বানানো
-    # ---------------------------------------------------------------------------
-    st.header("ধাপ ৩ — Merge করে Excel বানান")
-
-    if st.button("✅ Merge করে Excel তৈরি করুন", type="primary"):
-        with st.spinner("মার্জ করা হচ্ছে..."):
-            final_prefix_map = build_prefix_map(programs, overrides=prefix_overrides)
-            merged = merge_sources(
-                st.session_state["borrower_rows"],
-                st.session_state["balance_rows"],
-                final_prefix_map,
-            )
-            out_path = os.path.join(tempfile.gettempdir(), "merged_loan_report.xlsx")
-            stats = write_excel(merged, out_path)
-
-        st.success("✅ সম্পন্ন! নিচে ডাউনলোড করুন।")
-
-        c1, c2 = st.columns(2)
-        c1.metric("মোট রো", stats["total_rows"])
-        c2.metric("⚠ ম্যানুয়াল যাচাই দরকার এমন রো", stats["needs_review"])
-
-        if stats["needs_review"] > 0:
-            st.warning(
-                f"{stats['needs_review']}টা রো-তে নাম একাধিক লাইনে ভাগ হয়ে যাওয়ায় "
-                f"Father/Spouse/Village সঠিকভাবে আলাদা করা যায়নি। এই রো-গুলো Excel-এ "
-                f"হলুদ রঙে চিহ্নিত এবং 'নোট' কলামে কারণ লেখা আছে — একবার চোখ বুলিয়ে "
-                f"দেখে নেবেন।"
+            report_type = st.selectbox(
+                "রিপোর্টের ধরন বাছাই করুন",
+                [
+                    "Overdue Loan (নির্দিষ্ট তারিখ পর্যন্ত, oldest→newest)",
+                    "Expired Loan List (নির্দিষ্ট তারিখ পর্যন্ত, তারিখসহ)",
+                    "Rescheduled Loan (নির্দিষ্ট তারিখের পরের + Reschedule No. > 0)",
+                    "Union/Village সাজানো + সাবটোটাল রিপোর্ট",
+                    "Due Amount Report (যেসব রো-তে Due Amount আছে)",
+                ],
             )
 
+            all_unions = rg.get_unions(report_rows)
+
+
+            def union_village_picker(base_key, help_optional=True):
+                """একটা Union multiselect + প্রতিটা বাছাই করা Union-এর জন্য আলাদা আলাদা
+                Village multiselect দেখায় — একেকটা Union-এর village selection সম্পূর্ণ
+                স্বতন্ত্র, একটার সাথে আরেকটার কোনো সম্পর্ক নেই। কোনো Union-এর জন্য Village
+                বাছাই না করলে সেই পুরো Union (সব Village) ধরা হবে।
+                রিটার্ন করে {union_name: [village, ...]} — dict খালি হলে মানে সব Union, সব Village।"""
+                label = "Union বেছে নিন (এক বা একাধিক)" if not help_optional else \
+                    "Union বেছে নিন (ঐচ্ছিক — খালি রাখলে সব Union দেখাবে)"
+                sel_unions = st.multiselect(label, all_unions, key=f"{base_key}_unions")
+
+                union_village_map = {}
+                for union in sel_unions:
+                    village_options = rg.get_villages_for_unions(report_rows, [union])
+                    sel_villages = st.multiselect(
+                        f"↳ **{union}** — Village বেছে নিন (ঐচ্ছিক — খালি রাখলে এই Union-এর সব Village)",
+                        village_options, key=f"{base_key}_villages__{union}",
+                    )
+                    union_village_map[union] = sel_villages
+                return union_village_map
+
+            gen_btn = False
+            pdf_rows = None
+            grouped = False
+            title_text = ""
+            summary = None
+            out_filename = "loan_report.pdf"
+
+            if report_type.startswith("Overdue Loan"):
+                col1, col2 = st.columns(2)
+                start = col1.date_input("শুরুর তারিখ", value=date(2026, 1, 1), format="DD/MM/YYYY")
+                end = col2.date_input("শেষের তারিখ", value=date(2026, 6, 30), format="DD/MM/YYYY")
+
+                overdue_map = union_village_picker("overdue")
+                overdue_sort_lc = st.checkbox(
+                    "Loan Case অনুযায়ী সর্ট করুন (ঐচ্ছিক — না দিলে Overdue তারিখ অনুযায়ী সাজবে)",
+                    key="overdue_sort_lc",
+                )
+
+                if start > end:
+                    st.error("শুরুর তারিখ শেষের তারিখের পরে হতে পারবে না।")
+                    gen_btn = False
+                else:
+                    gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_overdue")
+
+                if gen_btn:
+                    pdf_rows = rg.filter_overdue(report_rows, start, end, overdue_map, overdue_sort_lc)
+                    title_text = f"Overdue Loan from {start.strftime('%d/%m/%Y')} to {end.strftime('%d/%m/%Y')}"
+                    sel_desc = rg.describe_union_village_selection(overdue_map)
+                    if sel_desc:
+                        title_text += f" — {sel_desc}"
+                    out_filename = rg.build_output_filename("Overdue", overdue_map, start=start, end=end)
+
+            elif report_type.startswith("Expired"):
+                before = st.date_input("Expired Loan List up to", value=date.today(), format="DD/MM/YYYY",
+                                        key="expired_date")
+                expired_map = union_village_picker("expired")
+                expired_sort_lc = st.checkbox(
+                    "Loan Case অনুযায়ী সর্ট করুন (ঐচ্ছিক — না দিলে Union + Overdue তারিখ অনুযায়ী সাজবে)",
+                    key="expired_sort_lc",
+                )
+                gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_expired")
+                if gen_btn:
+                    pdf_rows = rg.filter_expired(report_rows, before, expired_map, expired_sort_lc)
+                    title_text = f"Expired Loan List up to {before.strftime('%d/%m/%Y')}"
+                    sel_desc = rg.describe_union_village_selection(expired_map)
+                    if sel_desc:
+                        title_text += f" — {sel_desc}"
+                    summary = {
+                        "label": "Balance",
+                        "count": len(pdf_rows),
+                        "value": sum(rg._num(d.get("bal_total")) for d in pdf_rows),
+                    }
+                    out_filename = rg.build_output_filename("Expired", expired_map, single_date=before)
+
+            elif report_type.startswith("Rescheduled"):
+                after = st.date_input("Rescheduled Loan up to", value=date.today(), format="DD/MM/YYYY",
+                                       key="resch_date")
+                resch_map = union_village_picker("resch")
+                resch_sort_lc = st.checkbox(
+                    "Loan Case অনুযায়ী সর্ট করুন (ঐচ্ছিক — না দিলে Union + Overdue তারিখ অনুযায়ী সাজবে)",
+                    key="resch_sort_lc",
+                )
+                gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_resch")
+                if gen_btn:
+                    pdf_rows = rg.filter_rescheduled(report_rows, after, resch_map, resch_sort_lc)
+                    title_text = f"Rescheduled Loan up to {after.strftime('%d/%m/%Y')}"
+                    sel_desc = rg.describe_union_village_selection(resch_map)
+                    if sel_desc:
+                        title_text += f" — {sel_desc}"
+                    summary = {
+                        "label": "Balance",
+                        "count": len(pdf_rows),
+                        "value": sum(rg._num(d.get("bal_total")) for d in pdf_rows),
+                    }
+                    out_filename = rg.build_output_filename("Rescheduled", resch_map, single_date=after)
+
+            elif report_type.startswith("Union/Village"):
+                ref_date = st.date_input(
+                    "রেফারেন্স তারিখ (এই তারিখ পর্যন্ত overdue = Total Overdue; এর পরের overdue "
+                    "+ Reschedule No. > 0 = Total Rescheduled)",
+                    value=date.today(), format="DD/MM/YYYY", key="grouped_ref_date",
+                )
+                grouped_map = union_village_picker("grouped")
+                grouped_sort_lc = st.checkbox(
+                    "প্রতি Union-এর ভেতরে Village-এর বদলে Loan Case অনুযায়ী সর্ট করুন (ঐচ্ছিক)",
+                    key="grouped_sort_lc",
+                )
+                gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_grouped")
+                if gen_btn:
+                    pdf_rows = rg.group_by_union_village(report_rows, grouped_map, ref_date, grouped_sort_lc)
+                    title_text = f"Union / Village Wise Loan Report (Ref: {ref_date.strftime('%d/%m/%Y')})"
+                    sel_desc = rg.describe_union_village_selection(grouped_map)
+                    if sel_desc:
+                        title_text += f" — {sel_desc}"
+                    grouped = True
+                    summary = None
+                    out_filename = rg.build_output_filename("UnionVillage", grouped_map, single_date=ref_date)
+
+            else:  # Due Amount Report
+                due_map = union_village_picker("due")
+                due_sort_lc = st.checkbox(
+                    "Loan Case অনুযায়ী সর্ট করুন (ঐচ্ছিক — না দিলে Union + Overdue তারিখ অনুযায়ী সাজবে)",
+                    key="due_sort_lc",
+                )
+                gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_due")
+                if gen_btn:
+                    pdf_rows = rg.filter_due_amount(report_rows, due_map, due_sort_lc)
+                    title_text = "Due Amount Report"
+                    sel_desc = rg.describe_union_village_selection(due_map)
+                    if sel_desc:
+                        title_text += f" — {sel_desc}"
+                    summary = {
+                        "label": "Due Amount",
+                        "count": len(pdf_rows),
+                        "value": sum(rg._num(d.get("due_amount")) for d in pdf_rows),
+                    }
+                    out_filename = rg.build_output_filename("DueAmount", due_map)
+
+            if gen_btn and pdf_rows is not None:
+                if not branch_name.strip():
+                    st.warning("ব্রাঞ্চের নাম দেওয়া হয়নি — রিপোর্টে খালি দেখাবে। তারপরও এগিয়ে যাচ্ছি।")
+                with st.spinner("PDF ও Excel তৈরি হচ্ছে..."):
+                    out_pdf = os.path.join(tempfile.gettempdir(), out_filename)
+                    rg.generate_report_pdf(
+                        pdf_rows, out_pdf, branch_name=branch_name or "-",
+                        title_text=title_text, grouped=grouped, summary=summary,
+                    )
+                    out_filename_xlsx = os.path.splitext(out_filename)[0] + ".xlsx"
+                    out_xlsx = os.path.join(tempfile.gettempdir(), out_filename_xlsx)
+                    rg.generate_report_excel(pdf_rows, out_xlsx, grouped=grouped)
+                row_count = sum(len(g[1]) for g in pdf_rows) if grouped else len(pdf_rows)
+                st.success(f"✅ PDF ও Excel রেডি ({row_count}টা রো)।")
+                dcol1, dcol2 = st.columns(2)
+                with dcol1:
+                    with open(out_pdf, "rb") as f:
+                        st.download_button(
+                            "⬇️ PDF রিপোর্ট ডাউনলোড করুন",
+                            data=f.read(),
+                            file_name=out_filename,
+                            mime="application/pdf",
+                            type="primary",
+                        )
+                with dcol2:
+                    with open(out_xlsx, "rb") as f:
+                        st.download_button(
+                            "⬇️ Excel রিপোর্ট ডাউনলোড করুন",
+                            data=f.read(),
+                            file_name=out_filename_xlsx,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+
+
+def render_nbfi_tab():
+    """FORM NBFI RETURNS PDF (Account-wise Loan/Lease/Advances তথ্য, মাল্টি-পেজ) থেকে ডেটা
+    বের করে ব্যাংকের নিজস্ব ৩৪-কলাম NBFI রিপোর্টিং টেমপ্লেটের মতো একটা Excel বানানোর টুল।"""
+    st.caption("FORM NBFI RETURNS PDF আপলোড করুন — সেখান থেকে ডেটা বের করে NBFI রিপোর্টিং "
+               "টেমপ্লেট ফরম্যাটে একটা Excel ফাইল বানিয়ে দেবে।")
+
+    nbfi_pdf = st.file_uploader("NBFI Returns PDF", type="pdf", key="nbfi_pdf_upload")
+
+    if nbfi_pdf is None:
+        return
+
+    file_id = (nbfi_pdf.name, nbfi_pdf.size)
+    if st.session_state.get("nbfi_file_id") != file_id:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        tmp.write(nbfi_pdf.getbuffer())
+        tmp.close()
+        try:
+            with st.spinner("PDF থেকে হেডার ও ডেটা বের করা হচ্ছে..."):
+                header_info = nbp.parse_nbfi_header(tmp.name)
+                nbfi_rows = nbp.parse_nbfi_returns_pdf(tmp.name)
+        finally:
+            os.unlink(tmp.name)
+        st.session_state["nbfi_file_id"] = file_id
+        st.session_state["nbfi_header_info"] = header_info
+        st.session_state["nbfi_rows"] = nbfi_rows
+
+    header_info = st.session_state.get("nbfi_header_info") or {}
+    nbfi_rows = st.session_state.get("nbfi_rows") or []
+
+    if not nbfi_rows:
+        st.error("PDF থেকে কোনো ডেটা পাওয়া যায়নি — ফাইলটা ঠিক ফরম্যাটের কিনা যাচাই করুন।")
+        return
+
+    st.success(f"✅ PDF থেকে {len(nbfi_rows)}টা রো পাওয়া গেছে।")
+    with st.expander("PDF থেকে পাওয়া তথ্য দেখুন", expanded=False):
+        st.write(header_info)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        br_name = st.text_input(
+            "Br_Name (PDF-এ নেই, নিজে দিন — যেমন: Durgapur, Rajshahi)",
+            value=header_info.get("branch_name", "").replace(" Branch", ""),
+            key="nbfi_br_name",
+        )
+    with col2:
+        rm_office_name = st.text_input(
+            "RM_Office_Name (PDF-এ নেই, নিজে দিন — যেমন: Rajshahi)",
+            key="nbfi_rm_office",
+        )
+
+    project_no = st.number_input(
+        "Project_No (Category of Loan) — আপাতত সব রো-তে এই একটাই মান বসবে",
+        min_value=0, value=23, step=1, key="nbfi_project_no",
+    )
+
+    default_title = "Account-wise details information of Loan/Lease and Advances"
+    if header_info.get("period_from") and header_info.get("period_to"):
+        default_title += f" ({header_info['period_from']} to {header_info['period_to']})"
+    title_text = st.text_input("রিপোর্টের টাইটেল (Excel-এর উপরে বসবে)",
+                                value=default_title, key="nbfi_title")
+
+    gen_btn = st.button("📊 Excel বানান", type="primary", key="gen_nbfi")
+
+    if gen_btn:
+        with st.spinner("Excel তৈরি হচ্ছে..."):
+            out_name = f"NBFI_Report_{datetime.now(rg.BD_TZ).strftime('%d-%m-%Y_%H%M')}.xlsx"
+            out_path = os.path.join(tempfile.gettempdir(), out_name)
+            nbp.build_nbfi_excel(
+                nbfi_rows, out_path, project_no=project_no,
+                br_name=br_name, rm_office_name=rm_office_name, title_text=title_text,
+            )
+        st.success(f"✅ Excel রেডি ({len(nbfi_rows)}টা রো)।")
         with open(out_path, "rb") as f:
             st.download_button(
-                "⬇️ Excel ফাইল ডাউনলোড করুন",
+                "⬇️ Excel ডাউনলোড করুন",
                 data=f.read(),
-                file_name="merged_loan_report.xlsx",
+                file_name=out_name,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
             )
 
-        st.session_state["merged_xlsx_path"] = out_path
-else:
-    st.info("প্রথমে দুইটা PDF আপলোড করে 'PDF স্ক্যান করুন' বাটনে ক্লিক করুন।")
 
-
-# ---------------------------------------------------------------------------
-# ধাপ ৪: Excel থেকে ফিল্টার করে A4 Landscape PDF রিপোর্ট বানানো
-# ---------------------------------------------------------------------------
-st.header("ধাপ ৪ — PDF রিপোর্ট জেনারেট করুন")
-
-report_source = st.radio(
-    "কোন Excel থেকে রিপোর্ট বানাবেন?",
-    ["এইমাত্র মার্জ করা Excel (উপরে)", "অন্য একটা Excel আপলোড করুন (সংশোধিত ফাইল)"],
-    horizontal=True,
-)
-
-report_xlsx_path = None
-if report_source == "এইমাত্র মার্জ করা Excel (উপরে)":
-    if st.session_state.get("merged_xlsx_path"):
-        report_xlsx_path = st.session_state["merged_xlsx_path"]
-    else:
-        st.info("এখনো কোনো Excel মার্জ করা হয়নি — আগে ধাপ ৩ সম্পন্ন করুন, অথবা ডানের অপশনে "
-                 "নিজের Excel আপলোড করুন।")
-else:
-    uploaded_xlsx = st.file_uploader(
-        "সংশোধিত Excel ফাইল আপলোড করুন (Father/Village/Union ঠিক করা)",
-        type=["xlsx"], key="report_xlsx_upload",
-    )
-    if uploaded_xlsx:
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-        tmp.write(uploaded_xlsx.getbuffer())
-        tmp.close()
-        report_xlsx_path = tmp.name
-
-if report_xlsx_path:
-    try:
-        report_rows = rg.read_merged_excel(report_xlsx_path)
-    except Exception as e:
-        st.error(f"Excel পড়তে সমস্যা হয়েছে: {e}")
-        report_rows = None
-
-    if report_rows is not None:
-        st.success(f"{len(report_rows)}টা রো পাওয়া গেছে।")
-
-        branch_name = st.text_input("ব্রাঞ্চের নাম", value="")
-
-        report_type = st.selectbox(
-            "রিপোর্টের ধরন বাছাই করুন",
-            [
-                "Overdue Loan (নির্দিষ্ট তারিখ পর্যন্ত, oldest→newest)",
-                "Expired Loan List (নির্দিষ্ট তারিখ পর্যন্ত, তারিখসহ)",
-                "Rescheduled Loan (নির্দিষ্ট তারিখের পরের + Reschedule No. > 0)",
-                "Union/Village সাজানো + সাবটোটাল রিপোর্ট",
-                "Due Amount Report (যেসব রো-তে Due Amount আছে)",
-            ],
-        )
-
-        all_unions = rg.get_unions(report_rows)
-
-
-        def union_village_picker(base_key, help_optional=True):
-            """একটা Union multiselect + প্রতিটা বাছাই করা Union-এর জন্য আলাদা আলাদা
-            Village multiselect দেখায় — একেকটা Union-এর village selection সম্পূর্ণ
-            স্বতন্ত্র, একটার সাথে আরেকটার কোনো সম্পর্ক নেই। কোনো Union-এর জন্য Village
-            বাছাই না করলে সেই পুরো Union (সব Village) ধরা হবে।
-            রিটার্ন করে {union_name: [village, ...]} — dict খালি হলে মানে সব Union, সব Village।"""
-            label = "Union বেছে নিন (এক বা একাধিক)" if not help_optional else \
-                "Union বেছে নিন (ঐচ্ছিক — খালি রাখলে সব Union দেখাবে)"
-            sel_unions = st.multiselect(label, all_unions, key=f"{base_key}_unions")
-
-            union_village_map = {}
-            for union in sel_unions:
-                village_options = rg.get_villages_for_unions(report_rows, [union])
-                sel_villages = st.multiselect(
-                    f"↳ **{union}** — Village বেছে নিন (ঐচ্ছিক — খালি রাখলে এই Union-এর সব Village)",
-                    village_options, key=f"{base_key}_villages__{union}",
-                )
-                union_village_map[union] = sel_villages
-            return union_village_map
-
-        gen_btn = False
-        pdf_rows = None
-        grouped = False
-        title_text = ""
-        summary = None
-        out_filename = "loan_report.pdf"
-
-        if report_type.startswith("Overdue Loan"):
-            col1, col2 = st.columns(2)
-            start = col1.date_input("শুরুর তারিখ", value=date(2026, 1, 1), format="DD/MM/YYYY")
-            end = col2.date_input("শেষের তারিখ", value=date(2026, 6, 30), format="DD/MM/YYYY")
-
-            overdue_map = union_village_picker("overdue")
-            overdue_sort_lc = st.checkbox(
-                "Loan Case অনুযায়ী সর্ট করুন (ঐচ্ছিক — না দিলে Overdue তারিখ অনুযায়ী সাজবে)",
-                key="overdue_sort_lc",
-            )
-
-            if start > end:
-                st.error("শুরুর তারিখ শেষের তারিখের পরে হতে পারবে না।")
-                gen_btn = False
-            else:
-                gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_overdue")
-
-            if gen_btn:
-                pdf_rows = rg.filter_overdue(report_rows, start, end, overdue_map, overdue_sort_lc)
-                title_text = f"Overdue Loan from {start.strftime('%d/%m/%Y')} to {end.strftime('%d/%m/%Y')}"
-                sel_desc = rg.describe_union_village_selection(overdue_map)
-                if sel_desc:
-                    title_text += f" — {sel_desc}"
-                out_filename = rg.build_output_filename("Overdue", overdue_map, start=start, end=end)
-
-        elif report_type.startswith("Expired"):
-            before = st.date_input("Expired Loan List up to", value=date.today(), format="DD/MM/YYYY",
-                                    key="expired_date")
-            expired_map = union_village_picker("expired")
-            expired_sort_lc = st.checkbox(
-                "Loan Case অনুযায়ী সর্ট করুন (ঐচ্ছিক — না দিলে Union + Overdue তারিখ অনুযায়ী সাজবে)",
-                key="expired_sort_lc",
-            )
-            gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_expired")
-            if gen_btn:
-                pdf_rows = rg.filter_expired(report_rows, before, expired_map, expired_sort_lc)
-                title_text = f"Expired Loan List up to {before.strftime('%d/%m/%Y')}"
-                sel_desc = rg.describe_union_village_selection(expired_map)
-                if sel_desc:
-                    title_text += f" — {sel_desc}"
-                summary = {
-                    "label": "Balance",
-                    "count": len(pdf_rows),
-                    "value": sum(rg._num(d.get("bal_total")) for d in pdf_rows),
-                }
-                out_filename = rg.build_output_filename("Expired", expired_map, single_date=before)
-
-        elif report_type.startswith("Rescheduled"):
-            after = st.date_input("Rescheduled Loan up to", value=date.today(), format="DD/MM/YYYY",
-                                   key="resch_date")
-            resch_map = union_village_picker("resch")
-            resch_sort_lc = st.checkbox(
-                "Loan Case অনুযায়ী সর্ট করুন (ঐচ্ছিক — না দিলে Union + Overdue তারিখ অনুযায়ী সাজবে)",
-                key="resch_sort_lc",
-            )
-            gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_resch")
-            if gen_btn:
-                pdf_rows = rg.filter_rescheduled(report_rows, after, resch_map, resch_sort_lc)
-                title_text = f"Rescheduled Loan up to {after.strftime('%d/%m/%Y')}"
-                sel_desc = rg.describe_union_village_selection(resch_map)
-                if sel_desc:
-                    title_text += f" — {sel_desc}"
-                summary = {
-                    "label": "Balance",
-                    "count": len(pdf_rows),
-                    "value": sum(rg._num(d.get("bal_total")) for d in pdf_rows),
-                }
-                out_filename = rg.build_output_filename("Rescheduled", resch_map, single_date=after)
-
-        elif report_type.startswith("Union/Village"):
-            ref_date = st.date_input(
-                "রেফারেন্স তারিখ (এই তারিখ পর্যন্ত overdue = Total Overdue; এর পরের overdue "
-                "+ Reschedule No. > 0 = Total Rescheduled)",
-                value=date.today(), format="DD/MM/YYYY", key="grouped_ref_date",
-            )
-            grouped_map = union_village_picker("grouped")
-            grouped_sort_lc = st.checkbox(
-                "প্রতি Union-এর ভেতরে Village-এর বদলে Loan Case অনুযায়ী সর্ট করুন (ঐচ্ছিক)",
-                key="grouped_sort_lc",
-            )
-            gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_grouped")
-            if gen_btn:
-                pdf_rows = rg.group_by_union_village(report_rows, grouped_map, ref_date, grouped_sort_lc)
-                title_text = f"Union / Village Wise Loan Report (Ref: {ref_date.strftime('%d/%m/%Y')})"
-                sel_desc = rg.describe_union_village_selection(grouped_map)
-                if sel_desc:
-                    title_text += f" — {sel_desc}"
-                grouped = True
-                summary = None
-                out_filename = rg.build_output_filename("UnionVillage", grouped_map, single_date=ref_date)
-
-        else:  # Due Amount Report
-            due_map = union_village_picker("due")
-            due_sort_lc = st.checkbox(
-                "Loan Case অনুযায়ী সর্ট করুন (ঐচ্ছিক — না দিলে Union + Overdue তারিখ অনুযায়ী সাজবে)",
-                key="due_sort_lc",
-            )
-            gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_due")
-            if gen_btn:
-                pdf_rows = rg.filter_due_amount(report_rows, due_map, due_sort_lc)
-                title_text = "Due Amount Report"
-                sel_desc = rg.describe_union_village_selection(due_map)
-                if sel_desc:
-                    title_text += f" — {sel_desc}"
-                summary = {
-                    "label": "Due Amount",
-                    "count": len(pdf_rows),
-                    "value": sum(rg._num(d.get("due_amount")) for d in pdf_rows),
-                }
-                out_filename = rg.build_output_filename("DueAmount", due_map)
-
-        if gen_btn and pdf_rows is not None:
-            if not branch_name.strip():
-                st.warning("ব্রাঞ্চের নাম দেওয়া হয়নি — রিপোর্টে খালি দেখাবে। তারপরও এগিয়ে যাচ্ছি।")
-            with st.spinner("PDF ও Excel তৈরি হচ্ছে..."):
-                out_pdf = os.path.join(tempfile.gettempdir(), out_filename)
-                rg.generate_report_pdf(
-                    pdf_rows, out_pdf, branch_name=branch_name or "-",
-                    title_text=title_text, grouped=grouped, summary=summary,
-                )
-                out_filename_xlsx = os.path.splitext(out_filename)[0] + ".xlsx"
-                out_xlsx = os.path.join(tempfile.gettempdir(), out_filename_xlsx)
-                rg.generate_report_excel(pdf_rows, out_xlsx, grouped=grouped)
-            row_count = sum(len(g[1]) for g in pdf_rows) if grouped else len(pdf_rows)
-            st.success(f"✅ PDF ও Excel রেডি ({row_count}টা রো)।")
-            dcol1, dcol2 = st.columns(2)
-            with dcol1:
-                with open(out_pdf, "rb") as f:
-                    st.download_button(
-                        "⬇️ PDF রিপোর্ট ডাউনলোড করুন",
-                        data=f.read(),
-                        file_name=out_filename,
-                        mime="application/pdf",
-                        type="primary",
-                    )
-            with dcol2:
-                with open(out_xlsx, "rb") as f:
-                    st.download_button(
-                        "⬇️ Excel রিপোর্ট ডাউনলোড করুন",
-                        data=f.read(),
-                        file_name=out_filename_xlsx,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
+tab1, tab2 = st.tabs(["🏦 Loan Report Tool", "📑 NBFI Return PDF → Excel"])
+with tab1:
+    render_loan_merge_tab()
+with tab2:
+    render_nbfi_tab()
