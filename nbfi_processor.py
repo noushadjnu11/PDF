@@ -219,5 +219,59 @@ def build_nbfi_excel(rows, out_path, project_no=23, br_name="", rm_office_name="
         ws.column_dimensions[get_column_letter(idx)].width = w
 
     ws.freeze_panes = "A5"
+
+    # --- যোগফল সারি -- আসল ব্যাংক টেমপ্লেটে যেভাবে আছে ঠিক সেভাবেই: Q(17) থেকে AH(34)
+    # পর্যন্ত প্রতিটা amount কলামের যোগফল (Project_No আর Unic_Kormosuchi_Code_NO বাদে,
+    # যেহেতু ওগুলো কোড, টাকার অংক না) ---
+    last_row = start_row + len(rows) - 1
+    total_row = last_row + 1 if rows else start_row
+
+    label_cell = ws.cell(row=total_row, column=1, value="Total")
+    label_cell.font = bold
+    sum_cols = [c for c in range(17, len(HEADERS) + 1) if c not in (29, 30)]
+    for c in sum_cols:
+        col_letter = get_column_letter(c)
+        cell = ws.cell(row=total_row, column=c,
+                        value=f"=SUM({col_letter}{start_row}:{col_letter}{last_row})")
+        cell.font = bold
+        cell.number_format = "#,##0"
+
+    # --- বাড়তি সারাংশ টেবিল: Product Type Code (কলাম N)-অনুযায়ী সংখ্যা এবং সেই
+    # রো-গুলোর Overdue/Outstanding (কলাম AB)-এর যোগফল, যেমন: 21031 | 60 | 4,500,000 ---
+    n_col = get_column_letter(14)   # N -- PRODUCT_TYPE_CODE
+    ab_col = get_column_letter(28)  # AB -- Overdue/Outstanding
+
+    def _criteria(code):
+        return str(code) if isinstance(code, (int, float)) else f'"{code}"'
+
+    codes = sorted(
+        {row.get("PRODUCT_TYPE_CODE") for row in rows if row.get("PRODUCT_TYPE_CODE") is not None},
+        key=lambda v: (isinstance(v, str), v),
+    )
+
+    summary_start = total_row + 3
+    heading_cell = ws.cell(row=summary_start, column=1,
+                            value="Product Type Code (Column N) অনুযায়ী সারাংশ")
+    heading_cell.font = Font(bold=True, size=11)
+
+    hdr_row = summary_start + 1
+    for idx, h in enumerate(["Product Type Code", "সংখ্যা (Count)", "Overdue/Outstanding (AB) যোগফল"], start=1):
+        c = ws.cell(row=hdr_row, column=idx, value=h)
+        c.font = bold
+        c.fill = green_fill
+        c.alignment = center_wrap
+
+    for i, code in enumerate(codes):
+        r = hdr_row + 1 + i
+        ws.cell(row=r, column=1, value=code)
+        ws.cell(row=r, column=2,
+                value=f"=COUNTIF({n_col}{start_row}:{n_col}{last_row},{_criteria(code)})")
+        sum_cell = ws.cell(
+            row=r, column=3,
+            value=f"=SUMIF({n_col}{start_row}:{n_col}{last_row},{_criteria(code)},"
+                  f"{ab_col}{start_row}:{ab_col}{last_row})",
+        )
+        sum_cell.number_format = "#,##0"
+
     wb.save(out_path)
     return out_path
