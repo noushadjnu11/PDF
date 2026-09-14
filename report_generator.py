@@ -148,6 +148,16 @@ def _num(v):
         return 0.0
 
 
+def _s(v):
+    """যেকোনো মান (None/সংখ্যা/তারিখ/string) নিরাপদে trimmed string-এ রূপান্তর করে।
+    Excel-এর Union/Village/Loan Case-জাতীয় কলামে মাঝেমধ্যে সংখ্যা বা তারিখ টাইপ
+    হিসেবে ডেটা এসে গেলে (d.get(...) or "").strip() AttributeError দিত -- এই
+    হেল্পার সেটা এড়ায়।"""
+    if v is None:
+        return ""
+    return str(v).strip()
+
+
 _LOAN_CASE_RE = re.compile(r"^(\D*)(\d*)")
 
 
@@ -155,7 +165,7 @@ def _loan_case_sort_key(row):
     """Loan Case-কে অক্ষর-প্রিফিক্স + সংখ্যা অংশে ভেঙে সাজানোর key বানায়, যেমন
     'OWN2' < 'OWN10' (সংখ্যা হিসেবে, string হিসেবে না) -- একই প্রিফিক্সের (যেমন 'OWN')
     সব Loan Case একসাথে গ্রুপ হয়ে ছোট থেকে বড় সাজে, তারপর পরের প্রিফিক্স।"""
-    s = (row.get("prefixed_loan_case") or "").strip()
+    s = _s(row.get("prefixed_loan_case"))
     m = _LOAN_CASE_RE.match(s)
     prefix = (m.group(1) or "").strip().upper() if m else ""
     num_str = (m.group(2) or "") if m else ""
@@ -193,7 +203,7 @@ def _apply_union_filter(rows, unions):
     union_set = {u.strip().lower() for u in (unions or []) if u and u.strip()}
     if not union_set:
         return rows
-    return [d for d in rows if (d.get("union") or "").strip().lower() in union_set]
+    return [d for d in rows if _s(d.get("union")).lower() in union_set]
 
 
 def _apply_village_filter(rows, villages):
@@ -201,7 +211,7 @@ def _apply_village_filter(rows, villages):
     village_set = {v.strip().lower() for v in (villages or []) if v and v.strip()}
     if not village_set:
         return rows
-    return [d for d in rows if (d.get("village") or "").strip().lower() in village_set]
+    return [d for d in rows if _s(d.get("village")).lower() in village_set]
 
 
 def _apply_union_village_map_filter(rows, union_village_map):
@@ -223,11 +233,11 @@ def _apply_union_village_map_filter(rows, union_village_map):
         return rows
     out = []
     for d in rows:
-        u_key = (d.get("union") or "").strip().lower()
+        u_key = _s(d.get("union")).lower()
         if u_key not in norm_map:
             continue
         v_set = norm_map[u_key]
-        if not v_set or (d.get("village") or "").strip().lower() in v_set:
+        if not v_set or _s(d.get("village")).lower() in v_set:
             out.append(d)
     return out
 
@@ -252,14 +262,14 @@ def describe_union_village_selection(union_village_map):
 
 def get_unions(rows):
     """সব রো থেকে ইউনিক, sorted Union-এর তালিকা।"""
-    return sorted({(d.get("union") or "").strip() for d in rows if d.get("union")})
+    return sorted({_s(d.get("union")) for d in rows if d.get("union")})
 
 
 def get_villages_for_unions(rows, unions=None):
     """দেওয়া Union(গুলো)-র মধ্যে থাকা ইউনিক, sorted Village-এর তালিকা।
     unions খালি থাকলে সব রো-এর Village ফেরত দেয়।"""
     base = _apply_union_filter(rows, unions)
-    return sorted({(d.get("village") or "").strip() for d in base if d.get("village")})
+    return sorted({_s(d.get("village")) for d in base if d.get("village")})
 
 
 def filter_overdue(rows, start_date, end_date, union_village_map=None, sort_by_loan_case=False):
@@ -288,7 +298,7 @@ def filter_expired(rows, before, union_village_map=None, sort_by_loan_case=False
     if sort_by_loan_case:
         out.sort(key=_loan_case_sort_key)
     else:
-        out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
+        out.sort(key=lambda d: (_s(d.get("union")).lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
@@ -304,7 +314,7 @@ def filter_rescheduled(rows, after, union_village_map=None, sort_by_loan_case=Fa
     if sort_by_loan_case:
         out.sort(key=_loan_case_sort_key)
     else:
-        out.sort(key=lambda d: ((d.get("union") or "").strip().lower(), parse_ddmmyyyy(d.get("overdue_date"))))
+        out.sort(key=lambda d: (_s(d.get("union")).lower(), parse_ddmmyyyy(d.get("overdue_date"))))
     return out
 
 
@@ -317,7 +327,7 @@ def filter_due_amount(rows, union_village_map=None, sort_by_loan_case=False):
     if sort_by_loan_case:
         out.sort(key=_loan_case_sort_key)
     else:
-        out.sort(key=lambda d: ((d.get("union") or "").strip().lower(),
+        out.sort(key=lambda d: (_s(d.get("union")).lower(),
                                  parse_ddmmyyyy(d.get("overdue_date")) or date.min))
     return out
 
@@ -341,7 +351,7 @@ def group_by_union_village(rows, union_village_map=None, ref_date=None, sort_by_
     rows = _apply_union_village_map_filter(rows, union_village_map)
     groups = defaultdict(list)
     for d in rows:
-        union = (d.get("union") or "Unknown").strip() or "Unknown"
+        union = _s(d.get("union")) or "Unknown"
         groups[union].append(d)
 
     result = []
@@ -349,7 +359,7 @@ def group_by_union_village(rows, union_village_map=None, ref_date=None, sort_by_
         if sort_by_loan_case:
             group_rows = sorted(groups[union], key=_loan_case_sort_key)
         else:
-            group_rows = sorted(groups[union], key=lambda d: (d.get("village") or "").strip())
+            group_rows = sorted(groups[union], key=lambda d: _s(d.get("village")))
 
         overdue_rows = [
             d for d in group_rows
@@ -410,7 +420,7 @@ def build_three_month_overview(rows, union_village_map=None, start_date=None, en
     def _group(flat_rows, sort_lc):
         groups = defaultdict(list)
         for d in flat_rows:
-            union = (d.get("union") or "Unknown").strip() or "Unknown"
+            union = _s(d.get("union")) or "Unknown"
             groups[union].append(d)
         result = []
         for union in sorted(groups.keys()):
