@@ -267,6 +267,7 @@ def render_loan_merge_tab():
                     "Rescheduled Loan (নির্দিষ্ট তারিখের পরের + Reschedule No. > 0)",
                     "Union/Village সাজানো + সাবটোটাল রিপোর্ট",
                     "Due Amount Report (যেসব রো-তে Due Amount আছে)",
+                    "৩-মাস ওভারভিউ (Regular → Overdue → Expired → Rescheduled → Due)",
                 ],
             )
 
@@ -299,11 +300,16 @@ def render_loan_merge_tab():
             title_text = ""
             summary = None
             out_filename = "loan_report.pdf"
+            overview_data = None
+            overview_start = overview_end = None
 
             if report_type.startswith("Overdue Loan"):
+                _default_start = rg.default_overdue_start_date()
                 col1, col2 = st.columns(2)
-                start = col1.date_input("শুরুর তারিখ", value=date(2026, 1, 1), format="DD/MM/YYYY")
-                end = col2.date_input("শেষের তারিখ", value=date(2026, 6, 30), format="DD/MM/YYYY")
+                start = col1.date_input("শুরুর তারিখ", value=_default_start, format="DD/MM/YYYY",
+                                         key="overdue_start")
+                end = col2.date_input("শেষের তারিখ", value=rg.add_months(start, 3),
+                                       format="DD/MM/YYYY", key="overdue_end")
 
                 overdue_map = union_village_picker("overdue")
                 overdue_sort_lc = st.checkbox(
@@ -391,7 +397,7 @@ def render_loan_merge_tab():
                     summary = None
                     out_filename = rg.build_output_filename("UnionVillage", grouped_map, single_date=ref_date)
 
-            else:  # Due Amount Report
+            elif report_type.startswith("Due Amount"):
                 due_map = union_village_picker("due")
                 due_sort_lc = st.checkbox(
                     "Loan Case অনুযায়ী সর্ট করুন (ঐচ্ছিক — না দিলে Union + Overdue তারিখ অনুযায়ী সাজবে)",
@@ -410,6 +416,44 @@ def render_loan_merge_tab():
                         "value": sum(rg._num(d.get("due_amount")) for d in pdf_rows),
                     }
                     out_filename = rg.build_output_filename("DueAmount", due_map)
+
+            else:  # ৩-মাস ওভারভিউ রিপোর্ট
+                _default_start = rg.default_overdue_start_date()
+                ocol1, ocol2 = st.columns(2)
+                overview_start = ocol1.date_input(
+                    "শুরুর তারিখ (চলতি মাসের ১-১০ হলে অটো চলতি মাসের ১, নাহলে পরের মাসের ১)",
+                    value=_default_start, format="DD/MM/YYYY", key="overview_start",
+                )
+                overview_end = ocol2.date_input(
+                    "শেষের তারিখ (ডিফল্ট শুরুর তারিখ + ৩ মাস, এডিটেবল)",
+                    value=rg.add_months(overview_start, 3), format="DD/MM/YYYY", key="overview_end",
+                )
+
+                overview_map = union_village_picker("overview")
+
+                st.caption("প্রতিটা টেবিলের জন্য আলাদাভাবে Loan Case সর্ট (ঐচ্ছিক — না দিলে "
+                           "Overdue তারিখ অনুযায়ী সাজবে):")
+                ov_sort = {}
+                sort_cols = st.columns(5)
+                for (key, label), col in zip(rg.OVERVIEW_SECTIONS, sort_cols):
+                    ov_sort[key] = col.checkbox(label, key=f"overview_sort_{key}")
+
+                if overview_start > overview_end:
+                    st.error("শুরুর তারিখ শেষের তারিখের পরে হতে পারবে না।")
+                else:
+                    gen_btn = st.button("📄 PDF রিপোর্ট বানান", type="primary", key="gen_overview")
+
+                if gen_btn:
+                    overview_data = rg.build_three_month_overview(
+                        report_rows, overview_map, overview_start, overview_end, ov_sort,
+                    )
+                    title_text = (f"3-Month Overview ({overview_start.strftime('%d/%m/%Y')} to "
+                                   f"{overview_end.strftime('%d/%m/%Y')})")
+                    sel_desc = rg.describe_union_village_selection(overview_map)
+                    if sel_desc:
+                        title_text += f" — {sel_desc}"
+                    out_filename = rg.build_output_filename("Overview", overview_map,
+                                                              start=overview_start, end=overview_end)
 
             if gen_btn and pdf_rows is not None:
                 if not branch_name.strip():
@@ -442,6 +486,42 @@ def render_loan_merge_tab():
                             data=f.read(),
                             file_name=out_filename_xlsx,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+
+            if gen_btn and overview_data is not None:
+                if not branch_name.strip():
+                    st.warning("ব্রাঞ্চের নাম দেওয়া হয়নি — রিপোর্টে খালি দেখাবে। তারপরও এগিয়ে যাচ্ছি।")
+                with st.spinner("PDF ও Excel তৈরি হচ্ছে..."):
+                    out_pdf = os.path.join(tempfile.gettempdir(), out_filename)
+                    rg.generate_overview_report_pdf(
+                        overview_data, out_pdf, branch_name=branch_name or "-", title_text=title_text,
+                    )
+                    out_filename_xlsx = os.path.splitext(out_filename)[0] + ".xlsx"
+                    out_xlsx = os.path.join(tempfile.gettempdir(), out_filename_xlsx)
+                    rg.generate_overview_excel(overview_data, out_xlsx)
+                row_count = sum(
+                    sum(len(g[1]) for g in overview_data[key]) for key, _ in rg.OVERVIEW_SECTIONS
+                )
+                st.success(f"✅ PDF ও Excel রেডি (৫ সেকশন মিলিয়ে মোট {row_count}টা রো)।")
+                dcol1, dcol2 = st.columns(2)
+                with dcol1:
+                    with open(out_pdf, "rb") as f:
+                        st.download_button(
+                            "⬇️ PDF রিপোর্ট ডাউনলোড করুন",
+                            data=f.read(),
+                            file_name=out_filename,
+                            mime="application/pdf",
+                            type="primary",
+                            key="dl_overview_pdf",
+                        )
+                with dcol2:
+                    with open(out_xlsx, "rb") as f:
+                        st.download_button(
+                            "⬇️ Excel রিপোর্ট ডাউনলোড করুন",
+                            data=f.read(),
+                            file_name=out_filename_xlsx,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_overview_xlsx",
                         )
 
 

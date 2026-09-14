@@ -15,6 +15,12 @@ merged_loan_report.xlsx থেকে বিভিন্ন ধরনের A4-La
        overdue + Reschedule No. > 0 রো-গুলোর সংখ্যা ও ব্যালেন্স) -- এবং সব Union শেষে
        Grand Total (সব সাবটোটালের যোগফল)।
     5. Due Amount Report
+    6. ৩-মাস ওভারভিউ রিপোর্ট (build_three_month_overview + generate_overview_report_pdf) --
+       Regular → Overdue → Expired → Rescheduled → Due, এই ক্রমে ৫টা সেকশন, প্রতিটা
+       Union-ভিত্তিক গ্রুপ করা, প্রতিটা Union সাব-টেবিল নতুন পেজে শুরু হয়। শুরুর তারিখ
+       ডিফল্ট: চলতি মাসের ১-১০ হলে চলতি মাসের ১ তারিখ, নাহলে পরের মাসের ১ তারিখ
+       (default_overdue_start_date) -- শেষের তারিখ ডিফল্ট শুরুর তারিখ + ৩ মাস
+       (add_months), দুটোই UI-তে বদলানো যায়।
 
     প্রতিটা রিপোর্টে যেখানেই Union বাছাইয়ের অপশন আছে, সেখানে ঐচ্ছিকভাবে সেই
     Union(গুলো)-র ভেতরের Village-ও বাছাই করা যায় (খালি রাখলে সব Village আসবে)।
@@ -47,8 +53,8 @@ from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer, Table,
-                                 TableStyle)
+from reportlab.platypus import (PageBreak, Paragraph, SimpleDocTemplate, Spacer,
+                                 Table, TableStyle)
 
 BANK_NAME_DEFAULT = "KARMASANGSTHAN BANK"
 FONT_REGULAR = "Helvetica"
@@ -58,7 +64,7 @@ BD_TZ = timezone(timedelta(hours=6))  # Bangladesh Standard Time, GMT+6 -- স�
 
 # Excel-এর কলাম অর্ডারের সাথে হুবহু মিল রেখে (pdf_processor.write_excel দেখুন)
 COLUMNS = [
-    ("prefixed_loan_case", "Case"),
+    ("prefixed_loan_case", "Loan Case"),
     ("borrower", "Borrower"),
     ("father", "Father"),
     ("spouse", "Spouse"),
@@ -66,7 +72,7 @@ COLUMNS = [
     ("union", "Union"),
     ("phone", "Phone"),
     ("overdue_date", "Overdue"),
-    ("installment", "Inst."),
+    ("installment", "Installment"),
     ("bal_principal", "Principal"),
     ("bal_interest", "Interest"),
     ("bal_total", "Balance"),
@@ -79,7 +85,7 @@ _AMOUNT_KEYS = {"installment", "bal_principal", "bal_interest", "bal_total", "du
 
 # কলামগুলোর আপেক্ষিক প্রস্থ -- সংখ্যা/তারিখ কলাম সরু, নাম/ঠিকানা কলাম চওড়া
 _COLUMN_WEIGHTS = {
-    "prefixed_loan_case": 0.9,
+    "prefixed_loan_case": 1.0,
     "borrower": 1.3,
     "father": 1.3,
     "spouse": 1.3,
@@ -91,7 +97,7 @@ _COLUMN_WEIGHTS = {
     "bal_principal": 0.8,
     "bal_interest": 0.7,
     "bal_total": 0.8,
-    "due_amount": 0.7,
+    "due_amount": 0.65,
     "reschedule_no": 0.55,
     "blank_col": 0.8,
 }
@@ -157,9 +163,31 @@ def _loan_case_sort_key(row):
     return (prefix, num, s.upper())
 
 
-# =============================================================================
-# ২. ফিল্টার + সর্ট ফাংশনসমূহ
-# =============================================================================
+def default_overdue_start_date(today=None):
+    """Overdue-জাতীয় রিপোর্টের শুরুর তারিখ অটো-বসানোর নিয়ম: আজকের তারিখ চলতি মাসের
+    ১-১০ এর মধ্যে হলে চলতি মাসের ১ তারিখ, নাহলে (১১ বা তার পরে হলে) পরের মাসের
+    ১ তারিখ। ইউজার চাইলে UI-তে এটা বদলে দিতে পারবে (শুধু ডিফল্ট মান)।"""
+    today = today or date.today()
+    if today.day <= 10:
+        return date(today.year, today.month, 1)
+    if today.month == 12:
+        return date(today.year + 1, 1, 1)
+    return date(today.year, today.month + 1, 1)
+
+
+def add_months(d, months):
+    """d তারিখের সাথে months সংখ্যক মাস যোগ করে -- মাসের শেষ দিনের হিসাব ঠিক রেখে
+    (যেমন 31 জানুয়ারি + 1 মাস = 28/29 ফেব্রুয়ারি)।"""
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    is_leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+    days_in_month = [31, 29 if is_leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    day = min(d.day, days_in_month[month - 1])
+    return date(year, month, day)
+
+
+
 def _apply_union_filter(rows, unions):
     """unions দেওয়া থাকলে শুধু সেই Union(গুলো)-র রো রাখে; না থাকলে সব রো ফেরত দেয়।"""
     union_set = {u.strip().lower() for u in (unions or []) if u and u.strip()}
@@ -345,6 +373,79 @@ def group_by_union_village(rows, union_village_map=None, ref_date=None, sort_by_
         result.append((union, group_rows, subtotal))
     return result
 
+
+OVERVIEW_SECTIONS = [
+    ("regular", "Regular Loan"),
+    ("overdue", "Overdue Loan"),
+    ("expired", "Expired Loan"),
+    ("rescheduled", "Rescheduled Loan"),
+    ("due", "Due Loan"),
+]
+
+
+def build_three_month_overview(rows, union_village_map=None, start_date=None, end_date=None,
+                                sort_by_loan_case=None):
+    """"৩-মাস ওভারভিউ" রিপোর্টের জন্য ৫টা ক্যাটাগরি -- Regular, Overdue, Expired,
+    Rescheduled, Due -- Union-ভিত্তিক গ্রুপ করে রিটার্ন করে।
+        Regular Loan     -- overdue_date > start_date (অর্থাৎ Expired বাদে বাকি সব)
+        Overdue Loan     -- start_date <= overdue_date <= end_date
+        Expired Loan     -- overdue_date <= start_date (তারিখসহ)
+        Rescheduled Loan -- overdue_date > start_date এবং Reschedule No. > 0
+        Due Loan         -- Due Amount > 0
+    sort_by_loan_case: প্রতিটা ক্যাটাগরির জন্য আলাদা sort পছন্দ, dict যেমন
+        {"regular": False, "overdue": True, ...} (না দেওয়া key/dict মানে ডিফল্ট
+        False -- সেক্ষেত্রে প্রতি Union-এর ভেতরে Overdue Date অনুযায়ী সাজে)।
+    রিটার্ন: {"regular": [...], "overdue": [...], "expired": [...],
+              "rescheduled": [...], "due": [...]}
+    প্রতিটা মান group_by_union_village()-এর মতো [(union, rows, {"count","balance"}), ...]।
+    """
+    sort_by_loan_case = sort_by_loan_case or {}
+    if start_date is None:
+        start_date = default_overdue_start_date()
+    if end_date is None:
+        end_date = add_months(start_date, 3)
+
+    filtered = _apply_union_village_map_filter(rows, union_village_map)
+
+    def _group(flat_rows, sort_lc):
+        groups = defaultdict(list)
+        for d in flat_rows:
+            union = (d.get("union") or "Unknown").strip() or "Unknown"
+            groups[union].append(d)
+        result = []
+        for union in sorted(groups.keys()):
+            if sort_lc:
+                grows = sorted(groups[union], key=_loan_case_sort_key)
+            else:
+                grows = sorted(groups[union], key=lambda d: parse_ddmmyyyy(d.get("overdue_date")) or date.min)
+            balance = sum(_num(d.get("bal_total")) for d in grows)
+            result.append((union, grows, {"count": len(grows), "balance": balance}))
+        return result
+
+    regular_rows = [
+        d for d in filtered if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > start_date
+    ]
+    overdue_rows = [
+        d for d in filtered
+        if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and start_date <= dt <= end_date
+    ]
+    expired_rows = [
+        d for d in filtered if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt <= start_date
+    ]
+    resch_rows = [
+        d for d in filtered
+        if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > start_date
+        and _num(d.get("reschedule_no")) > 0
+    ]
+    due_rows = [d for d in filtered if _num(d.get("due_amount")) > 0]
+
+    return {
+        "regular": _group(regular_rows, sort_by_loan_case.get("regular", False)),
+        "overdue": _group(overdue_rows, sort_by_loan_case.get("overdue", False)),
+        "expired": _group(expired_rows, sort_by_loan_case.get("expired", False)),
+        "rescheduled": _group(resch_rows, sort_by_loan_case.get("rescheduled", False)),
+        "due": _group(due_rows, sort_by_loan_case.get("due", False)),
+    }
 
 def build_output_filename(report_key, union_village_map=None, start=None, end=None,
                            single_date=None, ext="pdf"):
@@ -615,5 +716,125 @@ def generate_report_excel(rows, out_path, grouped=False):
         ws.column_dimensions[get_column_letter(idx)].width = w
 
     ws.freeze_panes = "A2"
+    wb.save(out_path)
+    return out_path
+
+
+def generate_overview_report_pdf(overview_data, out_path, branch_name, title_text,
+                                  bank_name=BANK_NAME_DEFAULT, logo_path=None):
+    """overview_data: build_three_month_overview()-এর রেজাল্ট। Regular → Overdue →
+    Expired → Rescheduled → Due -- এই ক্রমে ৫টা সেকশন, প্রতিটার ভেতরে Union-ভিত্তিক
+    সাব-টেবিল। প্রতিটা Union সাব-টেবিল (প্রতিটা সেকশনেরও প্রথমটা সহ) নতুন পেজে শুরু
+    হয়, যাতে কোনো একটা পেজে দুইটা টেবিল-হেডার-রো (Sl., Loan Case, ...) একসাথে না
+    থাকে -- প্রতিটা পেজে শুধু একটাই টাইটেল রো।"""
+    page_w, page_h = landscape(A4)
+    default_logo = os.path.join(os.path.dirname(__file__), "logo.png")
+    if logo_path is None and os.path.exists(default_logo):
+        logo_path = default_logo
+
+    doc = SimpleDocTemplate(
+        out_path, pagesize=landscape(A4),
+        leftMargin=8 * mm, rightMargin=8 * mm,
+        topMargin=45 * mm, bottomMargin=12 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    cell_style = ParagraphStyle("cell", parent=styles["Normal"], fontSize=6.5, leading=8,
+                                 fontName=FONT_REGULAR)
+    header_style = ParagraphStyle(
+        "hdr", parent=styles["Normal"], fontSize=7, leading=8,
+        alignment=TA_CENTER, fontName=FONT_BOLD,
+    )
+    section_style = ParagraphStyle(
+        "section", parent=styles["Heading3"], fontSize=13, spaceBefore=0, spaceAfter=6,
+        fontName=FONT_BOLD,
+    )
+    union_style = ParagraphStyle(
+        "union", parent=styles["Heading4"], fontSize=11, spaceBefore=4, spaceAfter=3,
+        fontName=FONT_BOLD,
+    )
+    subtotal_style = ParagraphStyle(
+        "subtotal", parent=styles["Normal"], fontSize=9, fontName=FONT_BOLD, spaceAfter=8,
+    )
+    normal_style = ParagraphStyle("normal_txt", parent=styles["Normal"], fontName=FONT_REGULAR)
+
+    elements = []
+    first_section = True
+    for key, label in OVERVIEW_SECTIONS:
+        groups = overview_data.get(key) or []
+        if not first_section:
+            elements.append(PageBreak())
+        first_section = False
+
+        if not groups:
+            elements.append(Paragraph(label, section_style))
+            elements.append(Paragraph("No data found.", normal_style))
+            continue
+
+        grand_count, grand_balance = 0, 0.0
+        first_union = True
+        for union, group_rows, subtotal in groups:
+            if not first_union:
+                elements.append(PageBreak())
+            first_union = False
+            elements.append(Paragraph(label, section_style))
+            elements.append(Paragraph(f"Union: {union}", union_style))
+            elements.append(_build_table(group_rows, page_w, cell_style, header_style))
+            elements.append(Paragraph(
+                f"Total Loans: {subtotal.get('count', 0)} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"Total Balance: {subtotal.get('balance', 0):,.0f}",
+                subtotal_style,
+            ))
+            elements.append(Spacer(1, 6))
+            grand_count += subtotal.get("count", 0)
+            grand_balance += subtotal.get("balance", 0)
+
+        elements.append(Paragraph(
+            f"{label} — Grand Total Loans: {grand_count} &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"Grand Total Balance: {grand_balance:,.0f}",
+            subtotal_style,
+        ))
+
+    print_dt_str = datetime.now(BD_TZ).strftime("%d/%m/%Y %I:%M %p")
+    header_fn = lambda c, d: _draw_header(c, d, bank_name, branch_name, logo_path, title_text, print_dt_str)
+    doc.build(elements, onFirstPage=header_fn, onLaterPages=header_fn)
+    return out_path
+
+
+def generate_overview_excel(overview_data, out_path):
+    """overview_data: build_three_month_overview()-এর রেজাল্ট। এক শিটে ৫টা সেকশন
+    (Regular → Overdue → Expired → Rescheduled → Due), প্রতিটার আগে একটা বোল্ড লেবেল
+    রো, তারপর হেডার রো (Sl. + বাকি কলাম + Union), তারপর ডেটা রো -- Union অনুযায়ী
+    গ্রুপ করা, প্রতি Union-এর জন্য Sl. নতুন করে ১ থেকে শুরু। ব্যাংকের নাম/লোগো/টাইটেল
+    নেই।"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "3-Month Overview"
+
+    r = 1
+    for key, label in OVERVIEW_SECTIONS:
+        groups = overview_data.get(key) or []
+        label_cell = ws.cell(row=r, column=1, value=label)
+        label_cell.font = Font(bold=True, size=13)
+        r += 1
+
+        header = ["Sl."] + [h for _, h in COLUMNS] + ["Union"]
+        for idx, h in enumerate(header, start=1):
+            c = ws.cell(row=r, column=idx, value=h)
+            c.font = Font(bold=True)
+        r += 1
+
+        for union, group_rows, _subtotal in groups:
+            for i, d in enumerate(group_rows, start=1):
+                row_vals = [i] + [_excel_cell(k, d.get(k)) for k, _ in COLUMNS] + [union]
+                for idx, v in enumerate(row_vals, start=1):
+                    ws.cell(row=r, column=idx, value=v)
+                r += 1
+        r += 2  # পরের সেকশনের আগে ফাঁকা গ্যাপ
+
+    widths = [6] + [max(10, len(h) + 2) for _, h in COLUMNS] + [14]
+    for idx, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = w
+
     wb.save(out_path)
     return out_path
