@@ -385,7 +385,6 @@ def group_by_union_village(rows, union_village_map=None, ref_date=None, sort_by_
 
 
 OVERVIEW_SECTIONS = [
-    ("regular", "Regular Loan"),
     ("overdue", "Overdue Loan"),
     ("expired", "Expired Loan"),
     ("rescheduled", "Rescheduled Loan"),
@@ -393,69 +392,110 @@ OVERVIEW_SECTIONS = [
 ]
 
 
-def build_three_month_overview(rows, union_village_map=None, start_date=None, end_date=None,
-                                sort_by_loan_case=None):
-    """"৩-মাস ওভারভিউ" রিপোর্টের জন্য ৫টা ক্যাটাগরি -- Regular, Overdue, Expired,
-    Rescheduled, Due -- Union-ভিত্তিক গ্রুপ করে রিটার্ন করে।
-        Regular Loan     -- overdue_date > start_date (অর্থাৎ Expired বাদে বাকি সব)
-        Overdue Loan     -- start_date <= overdue_date <= end_date
-        Expired Loan     -- overdue_date <= start_date (তারিখসহ)
-        Rescheduled Loan -- overdue_date > start_date এবং Reschedule No. > 0
-        Due Loan         -- Due Amount > 0
-    sort_by_loan_case: প্রতিটা ক্যাটাগরির জন্য আলাদা sort পছন্দ, dict যেমন
-        {"regular": False, "overdue": True, ...} (না দেওয়া key/dict মানে ডিফল্ট
-        False -- সেক্ষেত্রে প্রতি Union-এর ভেতরে Overdue Date অনুযায়ী সাজে)।
-    রিটার্ন: {"regular": [...], "overdue": [...], "expired": [...],
-              "rescheduled": [...], "due": [...]}
-    প্রতিটা মান group_by_union_village()-এর মতো [(union, rows, {"count","balance"}), ...]।
+def build_overview_report_data(rows, union_village_map=None, cutoff_date=None,
+                                overdue_start=None, overdue_end=None, sort_by_loan_case=None):
+    """"Overview Report"-এর জন্য ডেটা তৈরি করে।
+        Overall Loan Information -- Union-ভিত্তিক সারাংশ (কোনো লোন-লিস্টিং না):
+            প্রতি Union-এ Loan Count, Balance, Expired Count+Balance,
+            Rescheduled Count+Balance, Due Count+Balance -- শেষে Grand Total।
+        Overdue Loan      -- overdue_start <= overdue_date <= overdue_end
+        Expired Loan      -- overdue_date <= cutoff_date (তারিখসহ, inclusive)
+        Rescheduled Loan  -- overdue_date > cutoff_date (exclusive) এবং Reschedule No. > 0
+        Due Loan          -- Due Amount > 0
+    এই ৪টা টেবিল Union-ভিত্তিক গ্রুপ না করে ফ্ল্যাট লিস্ট হিসেবে থাকে -- ডিফল্ট সর্ট
+    Union তারপর Village অনুযায়ী; sort_by_loan_case-এ True দিলে সেই ক্যাটাগরির জন্য
+    Loan Case অনুযায়ী সাজে।
+
+    cutoff_date: Expired/Rescheduled দুটোর জন্যই এই একটা তারিখ ব্যবহার হয়। না দিলে
+        default_overdue_start_date()।
+    overdue_start/overdue_end: শুধু Overdue টেবিলের রেঞ্জ (cutoff_date থেকে সম্পূর্ণ
+        আলাদা, ইউজার এডিট করতে পারবে)। না দিলে overdue_start=cutoff_date,
+        overdue_end=add_months(cutoff_date, 3)।
+    sort_by_loan_case: dict, যেমন {"overdue": True, "expired": False, ...}।
+
+    রিটার্ন:
+        {
+          "cutoff_date", "overdue_start", "overdue_end",
+          "overall_summary": [(union, {count,balance,expired_count,expired_balance,
+                                        resch_count,resch_balance,due_count,due_balance}), ...],
+          "overall_grand": {...একই key-গুলোর যোগফল...},
+          "overdue": [row, ...], "expired": [...], "rescheduled": [...], "due": [...],
+        }
     """
     sort_by_loan_case = sort_by_loan_case or {}
-    if start_date is None:
-        start_date = default_overdue_start_date()
-    if end_date is None:
-        end_date = add_months(start_date, 3)
+    if cutoff_date is None:
+        cutoff_date = default_overdue_start_date()
+    if overdue_start is None:
+        overdue_start = cutoff_date
+    if overdue_end is None:
+        overdue_end = add_months(overdue_start, 3)
 
     filtered = _apply_union_village_map_filter(rows, union_village_map)
 
-    def _group(flat_rows, sort_lc):
-        groups = defaultdict(list)
-        for d in flat_rows:
-            union = _s(d.get("union")) or "Unknown"
-            groups[union].append(d)
-        result = []
-        for union in sorted(groups.keys()):
-            if sort_lc:
-                grows = sorted(groups[union], key=_loan_case_sort_key)
-            else:
-                grows = sorted(groups[union], key=lambda d: parse_ddmmyyyy(d.get("overdue_date")) or date.min)
-            balance = sum(_num(d.get("bal_total")) for d in grows)
-            result.append((union, grows, {"count": len(grows), "balance": balance}))
-        return result
+    def _sorted_flat(flat_rows, key):
+        if sort_by_loan_case.get(key, False):
+            return sorted(flat_rows, key=_loan_case_sort_key)
+        return sorted(flat_rows, key=lambda d: (_s(d.get("union")).lower(), _s(d.get("village")).lower()))
 
-    regular_rows = [
-        d for d in filtered if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > start_date
-    ]
     overdue_rows = [
         d for d in filtered
-        if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and start_date <= dt <= end_date
+        if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and overdue_start <= dt <= overdue_end
     ]
     expired_rows = [
-        d for d in filtered if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt <= start_date
+        d for d in filtered if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt <= cutoff_date
     ]
     resch_rows = [
         d for d in filtered
-        if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > start_date
+        if (dt := parse_ddmmyyyy(d.get("overdue_date"))) and dt > cutoff_date
         and _num(d.get("reschedule_no")) > 0
     ]
     due_rows = [d for d in filtered if _num(d.get("due_amount")) > 0]
 
+    # --- Overall Loan Information: Union-ভিত্তিক সারাংশ ---
+    def _by_union(flat_rows):
+        out = defaultdict(list)
+        for d in flat_rows:
+            out[_s(d.get("union")) or "Unknown"].append(d)
+        return out
+
+    all_by_union = _by_union(filtered)
+    expired_by_union = _by_union(expired_rows)
+    resch_by_union = _by_union(resch_rows)
+    due_by_union = _by_union(due_rows)
+
+    overall_summary = []
+    grand = defaultdict(float)
+    for union in sorted(all_by_union.keys()):
+        u_rows = all_by_union[union]
+        u_expired = expired_by_union.get(union, [])
+        u_resch = resch_by_union.get(union, [])
+        u_due = due_by_union.get(union, [])
+        row = {
+            "count": len(u_rows),
+            "balance": sum(_num(d.get("bal_total")) for d in u_rows),
+            "expired_count": len(u_expired),
+            "expired_balance": sum(_num(d.get("bal_total")) for d in u_expired),
+            "resch_count": len(u_resch),
+            "resch_balance": sum(_num(d.get("bal_total")) for d in u_resch),
+            "due_count": len(u_due),
+            "due_balance": sum(_num(d.get("bal_total")) for d in u_due),
+        }
+        overall_summary.append((union, row))
+        for k, v in row.items():
+            grand[k] += v
+
     return {
-        "regular": _group(regular_rows, sort_by_loan_case.get("regular", False)),
-        "overdue": _group(overdue_rows, sort_by_loan_case.get("overdue", False)),
-        "expired": _group(expired_rows, sort_by_loan_case.get("expired", False)),
-        "rescheduled": _group(resch_rows, sort_by_loan_case.get("rescheduled", False)),
-        "due": _group(due_rows, sort_by_loan_case.get("due", False)),
+        "cutoff_date": cutoff_date,
+        "overdue_start": overdue_start,
+        "overdue_end": overdue_end,
+        "overall_summary": overall_summary,
+        "overall_grand": dict(grand),
+        "overdue": _sorted_flat(overdue_rows, "overdue"),
+        "expired": _sorted_flat(expired_rows, "expired"),
+        "rescheduled": _sorted_flat(resch_rows, "rescheduled"),
+        "due": _sorted_flat(due_rows, "due"),
     }
+
 
 def build_output_filename(report_key, union_village_map=None, start=None, end=None,
                            single_date=None, ext="pdf"):
@@ -730,13 +770,132 @@ def generate_report_excel(rows, out_path, grouped=False):
     return out_path
 
 
-def generate_overview_report_pdf(overview_data, out_path, branch_name, title_text,
+_OVERALL_SUMMARY_COLUMNS = [
+    ("union", "Union"),
+    ("count", "Loan Count"),
+    ("balance", "Balance"),
+    ("expired_count", "Expired Count"),
+    ("expired_balance", "Expired Balance"),
+    ("resch_count", "Rescheduled Count"),
+    ("resch_balance", "Rescheduled Balance"),
+    ("due_count", "Due Count"),
+    ("due_balance", "Due Balance"),
+]
+
+
+def _build_overall_summary_table(overall_summary, overall_grand, page_w, cell_style, header_style):
+    """Union-ভিত্তিক সারাংশ (Loan Count/Balance + Expired/Rescheduled/Due-এর Count+Balance)
+    -- কোনো লোন-লিস্টিং না, শুধু সংখ্যার টেবিল। শেষে Grand Total সারি।"""
+    def _fmt(key, val):
+        if key == "union":
+            return str(val)
+        if key.endswith("_count") or key == "count":
+            return f"{int(val):,}"
+        return f"{val:,.0f}"
+
+    header_row = [Paragraph(h, header_style) for _, h in _OVERALL_SUMMARY_COLUMNS]
+    table_data = [header_row]
+
+    for union, row in overall_summary:
+        vals = [union] + [row.get(k, 0) for k, _ in _OVERALL_SUMMARY_COLUMNS[1:]]
+        table_data.append([
+            Paragraph(_fmt(k, v), cell_style)
+            for (k, _), v in zip(_OVERALL_SUMMARY_COLUMNS, vals)
+        ])
+
+    grand_vals = ["Grand Total"] + [overall_grand.get(k, 0) for k, _ in _OVERALL_SUMMARY_COLUMNS[1:]]
+    table_data.append([
+        Paragraph(_fmt(k, v), header_style)
+        for (k, _), v in zip(_OVERALL_SUMMARY_COLUMNS, grand_vals)
+    ])
+
+    avail_width = page_w - 16 * mm
+    raw_weights = [0.13, 0.09, 0.12, 0.10, 0.12, 0.12, 0.13, 0.09, 0.10]
+    total_w = sum(raw_weights)
+    col_widths = [avail_width * w / total_w for w in raw_weights]
+
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
+        ("LINEBELOW", (0, 0), (-1, 0), 1, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#F2F2F2")]),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#dfe6e9")),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return t
+
+
+def _build_combined_categories_table(category_data, page_w, cell_style, header_style,
+                                      label_style, subtotal_para_style):
+    """category_data: [(label, flat_rows), ...] -- Overdue/Expired/Rescheduled/Due,
+    সবগুলো একসাথে মিলে ONE Table flowable বানায়: কলাম-হেডার রো (Sl., Loan Case, ...)
+    শুধু সবার উপরে একবার (repeatRows=1 দিয়ে দরকার হলে পরের পেজে অটো রিপিট), প্রতিটা
+    ক্যাটাগরির আগে merged লেবেল-রো, শেষে merged সাবটোটাল-রো। তাই একাধিক ক্যাটাগরি
+    অনায়াসে একই পেজে ধরে যায়, কিন্তু কলাম-হেডার রো সারা রিপোর্টে কার্যত একবারই
+    (পেজ-ওভারফ্লো ছাড়া) দেখা যায়।"""
+    ncols = 1 + len(COLUMNS)
+    header_row = [Paragraph("Sl.", header_style)] + [Paragraph(h, header_style) for _, h in COLUMNS]
+    table_data = [header_row]
+    span_cmds = []
+    bg_cmds = []
+    row_i = 1
+
+    for label, rows in category_data:
+        table_data.append([Paragraph(label, label_style)] + [""] * (ncols - 1))
+        span_cmds.append(("SPAN", (0, row_i), (ncols - 1, row_i)))
+        bg_cmds.append(("BACKGROUND", (0, row_i), (ncols - 1, row_i), colors.HexColor("#dfe6e9")))
+        row_i += 1
+
+        if not rows:
+            table_data.append([Paragraph("No data found.", cell_style)] + [""] * (ncols - 1))
+            span_cmds.append(("SPAN", (0, row_i), (ncols - 1, row_i)))
+            row_i += 1
+        else:
+            for i, d in enumerate(rows, start=1):
+                table_data.append(
+                    [Paragraph(str(i), cell_style)] +
+                    [Paragraph(_fmt_cell(k, d.get(k)), cell_style) for k, _ in COLUMNS]
+                )
+                row_i += 1
+
+        total_balance = sum(_num(d.get("bal_total")) for d in rows)
+        subtotal_text = (f"Total Loans: {len(rows)} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                          f"Total Balance: {total_balance:,.0f}")
+        table_data.append([Paragraph(subtotal_text, subtotal_para_style)] + [""] * (ncols - 1))
+        span_cmds.append(("SPAN", (0, row_i), (ncols - 1, row_i)))
+        bg_cmds.append(("BACKGROUND", (0, row_i), (ncols - 1, row_i), colors.HexColor("#f7f7f7")))
+        row_i += 1
+
+    avail_width = page_w - 16 * mm
+    total_weight = _SL_WEIGHT + sum(_COLUMN_WEIGHTS.get(k, 1.0) for k, _ in COLUMNS)
+    col_widths = [avail_width * _SL_WEIGHT / total_weight] + \
+                 [avail_width * _COLUMN_WEIGHTS.get(k, 1.0) / total_weight for k, _ in COLUMNS]
+
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
+    base_style = [
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
+        ("LINEBELOW", (0, 0), (-1, 0), 1, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]
+    t.setStyle(TableStyle(base_style + span_cmds + bg_cmds))
+    return t
+
+
+def generate_overview_report_pdf(overview_data, out_path, branch_name,
                                   bank_name=BANK_NAME_DEFAULT, logo_path=None):
-    """overview_data: build_three_month_overview()-এর রেজাল্ট। Regular → Overdue →
-    Expired → Rescheduled → Due -- এই ক্রমে ৫টা সেকশন, প্রতিটার ভেতরে Union-ভিত্তিক
-    সাব-টেবিল। প্রতিটা Union সাব-টেবিল (প্রতিটা সেকশনেরও প্রথমটা সহ) নতুন পেজে শুরু
-    হয়, যাতে কোনো একটা পেজে দুইটা টেবিল-হেডার-রো (Sl., Loan Case, ...) একসাথে না
-    থাকে -- প্রতিটা পেজে শুধু একটাই টাইটেল রো।"""
+    """overview_data: build_overview_report_data()-এর রেজাল্ট। পেজের উপরের টাইটেল
+    সবসময় শুধু "Overview Report" (তার নিচে cutoff/overdue-range তথ্যের একটা লাইন)।
+    তারপর "Overall Loan Information" (Union-ভিত্তিক সারাংশ টেবিল, কোনো লোন-লিস্টিং
+    না), তারপর Overdue → Expired → Rescheduled → Due -- এই ৪টা মিলে ONE Table-এ, তাই
+    কলাম-হেডার রো (Sl., Loan Case, ...) কার্যত সারা রিপোর্টে একবারই থাকে -- একাধিক
+    ক্যাটাগরি অনায়াসে একই পেজে ধরে যায়।"""
     page_w, page_h = landscape(A4)
     default_logo = os.path.join(os.path.dirname(__file__), "logo.png")
     if logo_path is None and os.path.exists(default_logo):
@@ -759,87 +918,88 @@ def generate_overview_report_pdf(overview_data, out_path, branch_name, title_tex
         "section", parent=styles["Heading3"], fontSize=13, spaceBefore=0, spaceAfter=6,
         fontName=FONT_BOLD,
     )
-    union_style = ParagraphStyle(
-        "union", parent=styles["Heading4"], fontSize=11, spaceBefore=4, spaceAfter=3,
-        fontName=FONT_BOLD,
+    label_style = ParagraphStyle(
+        "catlabel", parent=styles["Normal"], fontSize=10, fontName=FONT_BOLD, leading=12,
     )
-    subtotal_style = ParagraphStyle(
-        "subtotal", parent=styles["Normal"], fontSize=9, fontName=FONT_BOLD, spaceAfter=8,
+    subtotal_para_style = ParagraphStyle(
+        "subtotal_inline", parent=styles["Normal"], fontSize=8, fontName=FONT_BOLD, leading=10,
     )
-    normal_style = ParagraphStyle("normal_txt", parent=styles["Normal"], fontName=FONT_REGULAR)
+    info_style = ParagraphStyle("info", parent=styles["Normal"], fontSize=9,
+                                 fontName=FONT_REGULAR, spaceAfter=8)
 
-    elements = []
-    first_section = True
-    for key, label in OVERVIEW_SECTIONS:
-        groups = overview_data.get(key) or []
-        if not first_section:
-            elements.append(PageBreak())
-        first_section = False
+    cutoff = overview_data.get("cutoff_date")
+    ostart = overview_data.get("overdue_start")
+    oend = overview_data.get("overdue_end")
 
-        if not groups:
-            elements.append(Paragraph(label, section_style))
-            elements.append(Paragraph("No data found.", normal_style))
-            continue
+    elements = [Paragraph(
+        f"Cut-off Date (Expired/Rescheduled): "
+        f"{cutoff.strftime('%d/%m/%Y') if cutoff else '-'} &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"Overdue Range: {ostart.strftime('%d/%m/%Y') if ostart else '-'} to "
+        f"{oend.strftime('%d/%m/%Y') if oend else '-'}",
+        info_style,
+    )]
 
-        grand_count, grand_balance = 0, 0.0
-        first_union = True
-        for union, group_rows, subtotal in groups:
-            if not first_union:
-                elements.append(PageBreak())
-            first_union = False
-            elements.append(Paragraph(label, section_style))
-            elements.append(Paragraph(f"Union: {union}", union_style))
-            elements.append(_build_table(group_rows, page_w, cell_style, header_style))
-            elements.append(Paragraph(
-                f"Total Loans: {subtotal.get('count', 0)} &nbsp;&nbsp;|&nbsp;&nbsp; "
-                f"Total Balance: {subtotal.get('balance', 0):,.0f}",
-                subtotal_style,
-            ))
-            elements.append(Spacer(1, 6))
-            grand_count += subtotal.get("count", 0)
-            grand_balance += subtotal.get("balance", 0)
+    elements.append(Paragraph("Overall Loan Information", section_style))
+    elements.append(_build_overall_summary_table(
+        overview_data.get("overall_summary") or [], overview_data.get("overall_grand") or {},
+        page_w, cell_style, header_style,
+    ))
+    elements.append(Spacer(1, 10))
 
-        elements.append(Paragraph(
-            f"{label} — Grand Total Loans: {grand_count} &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"Grand Total Balance: {grand_balance:,.0f}",
-            subtotal_style,
-        ))
+    category_data = [(label, overview_data.get(key) or []) for key, label in OVERVIEW_SECTIONS]
+    elements.append(_build_combined_categories_table(
+        category_data, page_w, cell_style, header_style, label_style, subtotal_para_style,
+    ))
 
     print_dt_str = datetime.now(BD_TZ).strftime("%d/%m/%Y %I:%M %p")
-    header_fn = lambda c, d: _draw_header(c, d, bank_name, branch_name, logo_path, title_text, print_dt_str)
+    header_fn = lambda c, d: _draw_header(c, d, bank_name, branch_name, logo_path,
+                                           "Overview Report", print_dt_str)
     doc.build(elements, onFirstPage=header_fn, onLaterPages=header_fn)
     return out_path
 
 
 def generate_overview_excel(overview_data, out_path):
-    """overview_data: build_three_month_overview()-এর রেজাল্ট। এক শিটে ৫টা সেকশন
-    (Regular → Overdue → Expired → Rescheduled → Due), প্রতিটার আগে একটা বোল্ড লেবেল
-    রো, তারপর হেডার রো (Sl. + বাকি কলাম + Union), তারপর ডেটা রো -- Union অনুযায়ী
-    গ্রুপ করা, প্রতি Union-এর জন্য Sl. নতুন করে ১ থেকে শুরু। ব্যাংকের নাম/লোগো/টাইটেল
-    নেই।"""
+    """overview_data: build_overview_report_data()-এর রেজাল্ট। প্রথমে "Overall Loan
+    Information" (Union-ভিত্তিক সারাংশ, Grand Total সহ) ব্লক, তারপর Overdue →
+    Expired → Rescheduled → Due -- প্রতিটা ফ্ল্যাট (Union-গ্রুপ ছাড়া, একটা আলাদা
+    Union কলাম দিয়ে চেনা যাবে) ব্লক হিসেবে, প্রতিটার আগে লেবেল রো + হেডার রো।
+    ব্যাংকের নাম/লোগো/টাইটেল নেই।"""
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "3-Month Overview"
+    ws.title = "Overview Report"
 
     r = 1
+    ws.cell(row=r, column=1, value="Overall Loan Information").font = Font(bold=True, size=13)
+    r += 1
+    for idx, (_key, h) in enumerate(_OVERALL_SUMMARY_COLUMNS, start=1):
+        ws.cell(row=r, column=idx, value=h).font = Font(bold=True)
+    r += 1
+    for union, row in overview_data.get("overall_summary") or []:
+        vals = [union] + [row.get(k, 0) for k, _ in _OVERALL_SUMMARY_COLUMNS[1:]]
+        for idx, v in enumerate(vals, start=1):
+            ws.cell(row=r, column=idx, value=v)
+        r += 1
+    grand = overview_data.get("overall_grand") or {}
+    grand_vals = ["Grand Total"] + [grand.get(k, 0) for k, _ in _OVERALL_SUMMARY_COLUMNS[1:]]
+    for idx, v in enumerate(grand_vals, start=1):
+        ws.cell(row=r, column=idx, value=v).font = Font(bold=True)
+    r += 3
+
     for key, label in OVERVIEW_SECTIONS:
-        groups = overview_data.get(key) or []
-        label_cell = ws.cell(row=r, column=1, value=label)
-        label_cell.font = Font(bold=True, size=13)
+        flat_rows = overview_data.get(key) or []
+        ws.cell(row=r, column=1, value=label).font = Font(bold=True, size=13)
         r += 1
 
         header = ["Sl."] + [h for _, h in COLUMNS] + ["Union"]
         for idx, h in enumerate(header, start=1):
-            c = ws.cell(row=r, column=idx, value=h)
-            c.font = Font(bold=True)
+            ws.cell(row=r, column=idx, value=h).font = Font(bold=True)
         r += 1
 
-        for union, group_rows, _subtotal in groups:
-            for i, d in enumerate(group_rows, start=1):
-                row_vals = [i] + [_excel_cell(k, d.get(k)) for k, _ in COLUMNS] + [union]
-                for idx, v in enumerate(row_vals, start=1):
-                    ws.cell(row=r, column=idx, value=v)
-                r += 1
+        for i, d in enumerate(flat_rows, start=1):
+            row_vals = [i] + [_excel_cell(k, d.get(k)) for k, _ in COLUMNS] + [_s(d.get("union"))]
+            for idx, v in enumerate(row_vals, start=1):
+                ws.cell(row=r, column=idx, value=v)
+            r += 1
         r += 2  # পরের সেকশনের আগে ফাঁকা গ্যাপ
 
     widths = [6] + [max(10, len(h) + 2) for _, h in COLUMNS] + [14]
