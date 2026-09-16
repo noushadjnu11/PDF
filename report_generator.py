@@ -72,9 +72,9 @@ COLUMNS = [
     ("union", "Union"),
     ("phone", "Phone"),
     ("overdue_date", "Overdue"),
-    ("installment", "Installment"),
-    ("bal_principal", "Principal"),
-    ("bal_interest", "Interest"),
+    ("installment", "Install."),
+    ("bal_principal", "Pri."),
+    ("bal_interest", "Int."),
     ("bal_total", "Balance"),
     ("due_amount", "Due"),
     ("reschedule_no", "Res."),
@@ -93,11 +93,11 @@ _COLUMN_WEIGHTS = {
     "union": 1.0,
     "phone": 1.15,
     "overdue_date": 0.85,
-    "installment": 0.95,
-    "bal_principal": 0.8,
+    "installment": 0.85,
+    "bal_principal": 0.7,
     "bal_interest": 0.7,
     "bal_total": 0.8,
-    "due_amount": 0.65,
+    "due_amount": 0.8,
     "reschedule_no": 0.55,
     "blank_col": 0.8,
 }
@@ -484,12 +484,60 @@ def build_overview_report_data(rows, union_village_map=None, cutoff_date=None,
         for k, v in row.items():
             grand[k] += v
 
+    # --- Village/Union Wise: প্রতিটা Union-এর ভেতরে প্রতিটা Village-এর সারাংশ,
+    # প্রতি Union-এর পর Sub Total, শেষে Grand Total ---
+    def _by_union_village(flat_rows):
+        out = defaultdict(list)
+        for d in flat_rows:
+            key = (_s(d.get("union")) or "Unknown", _s(d.get("village")) or "Unknown")
+            out[key].append(d)
+        return out
+
+    all_by_uv = _by_union_village(filtered)
+    expired_by_uv = _by_union_village(expired_rows)
+    resch_by_uv = _by_union_village(resch_rows)
+    due_by_uv = _by_union_village(due_rows)
+
+    union_villages = defaultdict(set)
+    for (u, v) in all_by_uv.keys():
+        union_villages[u].add(v)
+
+    village_union_summary = []
+    grand_vu = defaultdict(float)
+    for union in sorted(union_villages.keys()):
+        village_rows = []
+        union_sub = defaultdict(float)
+        for village in sorted(union_villages[union]):
+            uv_key = (union, village)
+            uv_rows = all_by_uv.get(uv_key, [])
+            uv_expired = expired_by_uv.get(uv_key, [])
+            uv_resch = resch_by_uv.get(uv_key, [])
+            uv_due = due_by_uv.get(uv_key, [])
+            vrow = {
+                "count": len(uv_rows),
+                "balance": sum(_num(d.get("bal_total")) for d in uv_rows),
+                "expired_count": len(uv_expired),
+                "expired_balance": sum(_num(d.get("bal_total")) for d in uv_expired),
+                "resch_count": len(uv_resch),
+                "resch_balance": sum(_num(d.get("bal_total")) for d in uv_resch),
+                "due_count": len(uv_due),
+                "due_balance": sum(_num(d.get("bal_total")) for d in uv_due),
+            }
+            village_rows.append((village, vrow))
+            for k, v in vrow.items():
+                union_sub[k] += v
+        village_union_summary.append((union, village_rows, dict(union_sub)))
+        for k, v in union_sub.items():
+            grand_vu[k] += v
+
     return {
         "cutoff_date": cutoff_date,
         "overdue_start": overdue_start,
         "overdue_end": overdue_end,
         "overall_summary": overall_summary,
         "overall_grand": dict(grand),
+        "village_union_summary": village_union_summary,
+        "village_union_grand": dict(grand_vu),
         "overdue": _sorted_flat(overdue_rows, "overdue"),
         "expired": _sorted_flat(expired_rows, "expired"),
         "rescheduled": _sorted_flat(resch_rows, "rescheduled"),
@@ -587,6 +635,16 @@ def _draw_header(canvas, doc, bank_name, branch_name, logo_path, title_text, pri
     canvas.drawRightString(page_w - 10 * mm, 8 * mm, f"Page {doc.page}")
     canvas.restoreState()
 
+_BANGLA_RE = re.compile(r"[\u0980-\u09FF]+")
+
+
+def _strip_bangla(s):
+    """Comment-জাতীয় ফ্রি-টেক্সট কলামে বাংলা অক্ষর থাকলে PDF-এর ফন্ট (Helvetica)
+    সেটা সাপোর্ট করে না, ফলে garbled/truncated দেখায় -- তাই সেই বাংলা অংশটুকু বাদ
+    দিয়ে বাকি (ইংরেজি/সংখ্যা) অংশ রাখা হয়।"""
+    return re.sub(r"\s+", " ", _BANGLA_RE.sub("", s)).strip()
+
+
 def _fmt_cell(key, val):
     if val is None or str(val).strip() in ("", "None"):
         return ""
@@ -595,7 +653,10 @@ def _fmt_cell(key, val):
             return f"{float(str(val).replace(',', '')):,.0f}"
         except (TypeError, ValueError):
             return str(val)
-    return str(val)
+    s = str(val)
+    if key == "blank_col":
+        s = _strip_bangla(s)
+    return s
 
 
 _SL_WEIGHT = 0.45
@@ -619,7 +680,6 @@ def _build_table(data_rows, page_w, cell_style, header_style, start_serial=1):
     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
     ("LINEBELOW", (0, 0), (-1, 0), 1, colors.black),   # হেডারের নিচে মোটা কালো লাইন
     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),  # খাঁটি ধূসর, কোনো রঙ না
     ("TOPPADDING", (0, 0), (-1, -1), 2),
     ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
 ]))
@@ -647,7 +707,7 @@ def generate_report_pdf(rows, out_path, branch_name, title_text,
     doc = SimpleDocTemplate(
         out_path, pagesize=landscape(A4),
         leftMargin=8 * mm, rightMargin=8 * mm,
-        topMargin=45 * mm, bottomMargin=12 * mm,
+        topMargin=42 * mm, bottomMargin=12 * mm,
     )
 
     styles = getSampleStyleSheet()
@@ -880,13 +940,87 @@ def _build_combined_categories_table(category_data, page_w, cell_style, header_s
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
         ("LINEBELOW", (0, 0), (-1, 0), 1, colors.black),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
         ("TOPPADDING", (0, 0), (-1, -1), 2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]
     t.setStyle(TableStyle(base_style + span_cmds + bg_cmds))
     return t
 
+
+_VILLAGE_UNION_COLUMNS = [
+    ("union", "Union"),
+    ("village", "Village"),
+    ("count", "Loan Count"),
+    ("balance", "Balance"),
+    ("expired_count", "Expired Count"),
+    ("expired_balance", "Expired Balance"),
+    ("resch_count", "Rescheduled Count"),
+    ("resch_balance", "Rescheduled Balance"),
+    ("due_count", "Due Count"),
+    ("due_balance", "Due Balance"),
+]
+
+
+def _build_village_union_summary_table(village_union_summary, grand_totals, page_w,
+                                        cell_style, header_style):
+    """প্রতিটা Union-এর ভেতরে প্রতিটা Village-এর সারাংশ (Loan Count/Balance +
+    Expired/Rescheduled/Due-এর Count+Balance), প্রতি Union-এর পর একটা Sub Total সারি,
+    সবশেষে Grand Total। ডেটা সারিগুলো (Village) পুরো সাদা, শুধু Sub Total/Grand Total
+    সারি হালকা ধূসর।"""
+    def _fmt(key, val):
+        if key in ("union", "village"):
+            return str(val)
+        if key.endswith("_count") or key == "count":
+            return f"{int(val):,}"
+        return f"{val:,.0f}"
+
+    header_row = [Paragraph(h, header_style) for _, h in _VILLAGE_UNION_COLUMNS]
+    table_data = [header_row]
+    shaded_rows = []
+    row_i = 1
+
+    for union, village_rows, union_sub in village_union_summary:
+        for village, vrow in village_rows:
+            vals = [union, village] + [vrow.get(k, 0) for k, _ in _VILLAGE_UNION_COLUMNS[2:]]
+            table_data.append([
+                Paragraph(_fmt(k, v), cell_style)
+                for (k, _), v in zip(_VILLAGE_UNION_COLUMNS, vals)
+            ])
+            row_i += 1
+
+        sub_vals = ["", f"Sub Total ({union})"] + [union_sub.get(k, 0) for k, _ in _VILLAGE_UNION_COLUMNS[2:]]
+        table_data.append([
+            Paragraph(_fmt(k, v), header_style)
+            for (k, _), v in zip(_VILLAGE_UNION_COLUMNS, sub_vals)
+        ])
+        shaded_rows.append(row_i)
+        row_i += 1
+
+    grand_vals = ["", "Grand Total"] + [grand_totals.get(k, 0) for k, _ in _VILLAGE_UNION_COLUMNS[2:]]
+    table_data.append([
+        Paragraph(_fmt(k, v), header_style)
+        for (k, _), v in zip(_VILLAGE_UNION_COLUMNS, grand_vals)
+    ])
+    shaded_rows.append(row_i)
+
+    avail_width = page_w - 16 * mm
+    raw_weights = [0.11, 0.11, 0.09, 0.11, 0.10, 0.11, 0.11, 0.12, 0.09, 0.11]
+    total_w = sum(raw_weights)
+    col_widths = [avail_width * w / total_w for w in raw_weights]
+
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
+    style_cmds = [
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
+        ("LINEBELOW", (0, 0), (-1, 0), 1, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]
+    for r in shaded_rows:
+        style_cmds.append(("BACKGROUND", (0, r), (-1, r), colors.HexColor("#dfe6e9")))
+    t.setStyle(TableStyle(style_cmds))
+    return t
 
 def generate_overview_report_pdf(overview_data, out_path, branch_name,
                                   bank_name=BANK_NAME_DEFAULT, logo_path=None):
@@ -904,7 +1038,7 @@ def generate_overview_report_pdf(overview_data, out_path, branch_name,
     doc = SimpleDocTemplate(
         out_path, pagesize=landscape(A4),
         leftMargin=8 * mm, rightMargin=8 * mm,
-        topMargin=45 * mm, bottomMargin=12 * mm,
+        topMargin=42 * mm, bottomMargin=12 * mm,
     )
 
     styles = getSampleStyleSheet()
@@ -946,6 +1080,13 @@ def generate_overview_report_pdf(overview_data, out_path, branch_name,
     ))
     elements.append(Spacer(1, 10))
 
+    elements.append(Paragraph("Village/Union Wise", section_style))
+    elements.append(_build_village_union_summary_table(
+        overview_data.get("village_union_summary") or [], overview_data.get("village_union_grand") or {},
+        page_w, cell_style, header_style,
+    ))
+    elements.append(Spacer(1, 10))
+
     category_data = [(label, overview_data.get(key) or []) for key, label in OVERVIEW_SECTIONS]
     elements.append(_build_combined_categories_table(
         category_data, page_w, cell_style, header_style, label_style, subtotal_para_style,
@@ -982,6 +1123,27 @@ def generate_overview_excel(overview_data, out_path):
     grand = overview_data.get("overall_grand") or {}
     grand_vals = ["Grand Total"] + [grand.get(k, 0) for k, _ in _OVERALL_SUMMARY_COLUMNS[1:]]
     for idx, v in enumerate(grand_vals, start=1):
+        ws.cell(row=r, column=idx, value=v).font = Font(bold=True)
+    r += 3
+
+    ws.cell(row=r, column=1, value="Village/Union Wise").font = Font(bold=True, size=13)
+    r += 1
+    for idx, (_key, h) in enumerate(_VILLAGE_UNION_COLUMNS, start=1):
+        ws.cell(row=r, column=idx, value=h).font = Font(bold=True)
+    r += 1
+    for union, village_rows, union_sub in overview_data.get("village_union_summary") or []:
+        for village, vrow in village_rows:
+            vals = [union, village] + [vrow.get(k, 0) for k, _ in _VILLAGE_UNION_COLUMNS[2:]]
+            for idx, v in enumerate(vals, start=1):
+                ws.cell(row=r, column=idx, value=v)
+            r += 1
+        sub_vals = ["", f"Sub Total ({union})"] + [union_sub.get(k, 0) for k, _ in _VILLAGE_UNION_COLUMNS[2:]]
+        for idx, v in enumerate(sub_vals, start=1):
+            ws.cell(row=r, column=idx, value=v).font = Font(bold=True)
+        r += 1
+    vu_grand = overview_data.get("village_union_grand") or {}
+    grand_vu_vals = ["", "Grand Total"] + [vu_grand.get(k, 0) for k, _ in _VILLAGE_UNION_COLUMNS[2:]]
+    for idx, v in enumerate(grand_vu_vals, start=1):
         ws.cell(row=r, column=idx, value=v).font = Font(bold=True)
     r += 3
 
