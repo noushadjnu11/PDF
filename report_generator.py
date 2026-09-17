@@ -93,12 +93,12 @@ _COLUMN_WEIGHTS = {
     "union": 1.0,
     "phone": 1.15,
     "overdue_date": 0.85,
-    "installment": 0.9,
+    "installment": 0.95,
     "bal_principal": 0.8,
     "bal_interest": 0.7,
     "bal_total": 0.8,
-    "due_amount": 0.8,
-    "reschedule_no": 0.5,
+    "due_amount": 0.65,
+    "reschedule_no": 0.55,
     "blank_col": 0.8,
 }
 
@@ -402,9 +402,10 @@ def build_overview_report_data(rows, union_village_map=None, cutoff_date=None,
         Expired Loan      -- overdue_date <= cutoff_date (তারিখসহ, inclusive)
         Rescheduled Loan  -- overdue_date > cutoff_date (exclusive) এবং Reschedule No. > 0
         Due Loan          -- Due Amount > 0
-    এই ৪টা টেবিল Union-ভিত্তিক গ্রুপ না করে ফ্ল্যাট লিস্ট হিসেবে থাকে -- ডিফল্ট সর্ট
-    Union তারপর Village অনুযায়ী; sort_by_loan_case-এ True দিলে সেই ক্যাটাগরির জন্য
-    Loan Case অনুযায়ী সাজে।
+    এই ৪টা টেবিল Union-ভিত্তিক গ্রুপ না করে ফ্ল্যাট লিস্ট হিসেবে থাকে। ডিফল্ট সর্ট:
+    Overdue Loan-এর জন্য Overdue Date অনুযায়ী (oldest → newest); Expired/Rescheduled/
+    Due-এর জন্য Union তারপর Village অনুযায়ী। sort_by_loan_case-এ কোনো ক্যাটাগরির
+    জন্য True দিলে সেই ক্যাটাগরি এর বদলে Loan Case অনুযায়ী সাজে।
 
     cutoff_date: Expired/Rescheduled দুটোর জন্যই এই একটা তারিখ ব্যবহার হয়। না দিলে
         default_overdue_start_date()।
@@ -435,6 +436,8 @@ def build_overview_report_data(rows, union_village_map=None, cutoff_date=None,
     def _sorted_flat(flat_rows, key):
         if sort_by_loan_case.get(key, False):
             return sorted(flat_rows, key=_loan_case_sort_key)
+        if key == "overdue":
+            return sorted(flat_rows, key=lambda d: parse_ddmmyyyy(d.get("overdue_date")) or date.min)
         return sorted(flat_rows, key=lambda d: (_s(d.get("union")).lower(), _s(d.get("village")).lower()))
 
     overdue_rows = [
@@ -547,10 +550,10 @@ def _draw_header(canvas, doc, bank_name, branch_name, logo_path, title_text, pri
     sub_font, sub_size = FONT_REGULAR, 8
     branch_font, branch_size = FONT_REGULAR, 9
 
-    # টেক্সট তিন লাইনের y-position (আগের মতোই)
-    y_bank = page_h - 20 * mm
-    y_sub = page_h - 25 * mm
-    y_branch = page_h - 30 * mm
+    # টেক্সট তিন লাইনের y-position (হেডার এখন পেজের উপর থেকে 10mm-এ শুরু হয়)
+    y_bank = page_h - 10 * mm
+    y_sub = page_h - 15 * mm
+    y_branch = page_h - 20 * mm
 
     # টেক্সট-ব্লকের ভার্টিক্যাল সেন্টার (প্রথম আর শেষ লাইনের মাঝামাঝি)
     text_block_center_y = (y_bank + y_branch) / 2
@@ -588,9 +591,9 @@ def _draw_header(canvas, doc, bank_name, branch_name, logo_path, title_text, pri
         canvas.drawRightString(page_w - 10 * mm, y_sub, "@Md. Noushad Ahmed")
 
     canvas.setFont(FONT_BOLD, 11)
-    canvas.drawCentredString(page_w / 2, page_h - 39.5 * mm, title_text)
+    canvas.drawCentredString(page_w / 2, page_h - 29.5 * mm, title_text)
     canvas.setLineWidth(0.5)
-    canvas.line(10 * mm, page_h - 41.5 * mm, page_w - 10 * mm, page_h - 41.5 * mm)
+    canvas.line(10 * mm, page_h - 31.5 * mm, page_w - 10 * mm, page_h - 31.5 * mm)
     canvas.setFont(FONT_REGULAR, 7)
     canvas.drawRightString(page_w - 10 * mm, 8 * mm, f"Page {doc.page}")
     canvas.restoreState()
@@ -667,7 +670,7 @@ def generate_report_pdf(rows, out_path, branch_name, title_text,
     doc = SimpleDocTemplate(
         out_path, pagesize=landscape(A4),
         leftMargin=8 * mm, rightMargin=8 * mm,
-        topMargin=42 * mm, bottomMargin=12 * mm,
+        topMargin=32 * mm, bottomMargin=12 * mm,
     )
 
     styles = getSampleStyleSheet()
@@ -1000,7 +1003,7 @@ def generate_overview_report_pdf(overview_data, out_path, branch_name,
     doc = SimpleDocTemplate(
         out_path, pagesize=landscape(A4),
         leftMargin=8 * mm, rightMargin=8 * mm,
-        topMargin=42 * mm, bottomMargin=12 * mm,
+        topMargin=32 * mm, bottomMargin=12 * mm,
     )
 
     styles = getSampleStyleSheet()
