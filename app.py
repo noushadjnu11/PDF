@@ -302,6 +302,7 @@ def render_loan_merge_tab():
             out_filename = "loan_report.pdf"
             overview_data = None
             overview_start = overview_end = None
+            show_vu_listing = False
 
             if report_type.startswith("Overdue Loan"):
                 _default_start = rg.default_overdue_start_date()
@@ -438,6 +439,13 @@ def render_loan_merge_tab():
 
                 overview_map = union_village_picker("overview")
 
+                show_vu_listing = st.checkbox(
+                    "Village/Union Wise Loan Listing দেখান (ঐচ্ছিক — সিলেক্টেড ইউনিয়নের সব লোন "
+                    "একসাথে, Union → Village অনুযায়ী সাজানো, প্রতিটা রো-তে Expired/Rescheduled/"
+                    "Overdue/Due স্ট্যাটাস দেখাবে)",
+                    key="overview_show_vu_listing",
+                )
+
                 st.caption("প্রতিটা টেবিলের জন্য আলাদাভাবে Loan Case সর্ট (ঐচ্ছিক — না দিলে "
                            "ডিফল্ট Union → Village অনুযায়ী সাজবে):")
                 ov_sort = {}
@@ -457,6 +465,8 @@ def render_loan_merge_tab():
                     title_text = "Overview Report"
                     out_filename = rg.build_output_filename("Overview", overview_map,
                                                               start=overview_start, end=overview_end)
+
+
 
 
 
@@ -500,10 +510,12 @@ def render_loan_merge_tab():
                     out_pdf = os.path.join(tempfile.gettempdir(), out_filename)
                     rg.generate_overview_report_pdf(
                         overview_data, out_pdf, branch_name=branch_name or "-",
+                        show_village_union_listing=show_vu_listing,
                     )
                     out_filename_xlsx = os.path.splitext(out_filename)[0] + ".xlsx"
                     out_xlsx = os.path.join(tempfile.gettempdir(), out_filename_xlsx)
-                    rg.generate_overview_excel(overview_data, out_xlsx)
+                    rg.generate_overview_excel(overview_data, out_xlsx,
+                                                show_village_union_listing=show_vu_listing)
                 row_count = sum(len(overview_data.get(key) or []) for key, _ in rg.OVERVIEW_SECTIONS)
                 st.success(f"✅ PDF ও Excel রেডি (৪ ক্যাটাগরি মিলিয়ে মোট {row_count}টা রো)।")
                 dcol1, dcol2 = st.columns(2)
