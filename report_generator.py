@@ -93,12 +93,12 @@ _COLUMN_WEIGHTS = {
     "union": 1.0,
     "phone": 1.15,
     "overdue_date": 0.85,
-    "installment": 0.95,
+    "installment": 0.9,
     "bal_principal": 0.8,
     "bal_interest": 0.7,
     "bal_total": 0.8,
-    "due_amount": 0.65,
-    "reschedule_no": 0.55,
+    "due_amount": 0.8,
+    "reschedule_no": 0.5,
     "blank_col": 0.8,
 }
 
@@ -485,9 +485,7 @@ def build_overview_report_data(rows, union_village_map=None, cutoff_date=None,
             grand[k] += v
 
     # --- Village/Union Wise: সিলেক্টেড স্কোপের সব লোন (কোনো ক্যাটাগরি-ফিল্টার ছাড়া)
-    # একসাথে মিলিয়ে Union → Village অনুযায়ী সাজানো একটা কম্বাইন্ড লিস্টিং -- প্রতিটা
-    # রো-তে সেই লোন কোন কোন ক্যাটাগরিতে পড়ে তা (Expired/Rescheduled/Overdue/Due)
-    # রেন্ডার-টাইমে যোগ হয় (_status_labels() দেখুন)।
+    # একসাথে মিলিয়ে Union → Village অনুযায়ী সাজানো একটা কম্বাইন্ড লিস্টিং ---
     village_union_listing = sorted(
         filtered, key=lambda d: (_s(d.get("union")).lower(), _s(d.get("village")).lower())
     )
@@ -909,36 +907,15 @@ def _build_combined_categories_table(category_data, page_w, cell_style, header_s
     return t
 
 
-def _status_labels(row, cutoff_date, overdue_start, overdue_end):
-    """একটা লোন Expired/Rescheduled/Overdue/Due -- এর মধ্যে কোন কোনটায় পড়ে তা টেক্সট
-    হিসেবে বানায়, যেমন: "Overdue (01/09/2026 to 01/12/2026), Due"। একাধিক প্রযোজ্য
-    হতে পারে (এগুলো একে অপরকে বাদ দেয় না), কোনোটাই প্রযোজ্য না হলে "Regular"।"""
-    labels = []
-    dt = parse_ddmmyyyy(row.get("overdue_date"))
-    if dt and dt <= cutoff_date:
-        labels.append(f"Expired ({cutoff_date.strftime('%d/%m/%Y')})")
-    if dt and dt > cutoff_date and _num(row.get("reschedule_no")) > 0:
-        labels.append("Rescheduled")
-    if dt and overdue_start <= dt <= overdue_end:
-        labels.append(f"Overdue ({overdue_start.strftime('%d/%m/%Y')} to {overdue_end.strftime('%d/%m/%Y')})")
-    if _num(row.get("due_amount")) > 0:
-        labels.append("Due")
-    return ", ".join(labels) if labels else "Regular"
-
-
-def _build_village_union_listing_table(rows, cutoff_date, overdue_start, overdue_end, page_w,
-                                        cell_style, header_style, subtotal_para_style):
+def _build_village_union_listing_table(rows, page_w, cell_style, header_style, subtotal_para_style):
     """সিলেক্টেড স্কোপের সব লোন (কোনো ক্যাটাগরি-ফিল্টার ছাড়া) Union → Village অনুযায়ী
-    সাজানো একটা কম্বাইন্ড লিস্টিং টেবিল বানায় -- মূল কলামগুলোর সাথে একটা বাড়তি
-    "Status" কলাম (Expired/Rescheduled/Overdue/Due -- একাধিক প্রযোজ্য হলে সবই দেখায়)।
-    প্রতিটা Union-এর শেষে একটা merged Sub Total সারি, সবশেষে Grand Total। প্রতি
-    Union-এর ভেতরে Sl. নতুন করে ১ থেকে শুরু হয়। rows আগে থেকেই Union→Village
-    অনুযায়ী সাজানো থাকতে হবে (build_overview_report_data()-এর village_union_listing)।
+    সাজানো একটা কম্বাইন্ড লিস্টিং টেবিল বানায়। প্রতিটা Union-এর শেষে একটা merged
+    Sub Total সারি, সবশেষে Grand Total। প্রতি Union-এর ভেতরে Sl. নতুন করে ১ থেকে
+    শুরু হয়। rows আগে থেকেই Union→Village অনুযায়ী সাজানো থাকতে হবে
+    (build_overview_report_data()-এর village_union_listing)।
     """
-    status_col = ("status", "Status")
-    all_cols = list(COLUMNS) + [status_col]
-    ncols = 1 + len(all_cols)
-    header_row = [Paragraph("Sl.", header_style)] + [Paragraph(h, header_style) for _, h in all_cols]
+    ncols = 1 + len(COLUMNS)
+    header_row = [Paragraph("Sl.", header_style)] + [Paragraph(h, header_style) for _, h in COLUMNS]
     table_data = [header_row]
     span_cmds = []
     bg_cmds = []
@@ -952,7 +929,6 @@ def _build_village_union_listing_table(rows, cutoff_date, overdue_start, overdue
             cells = [Paragraph(str(i), cell_style)]
             for k, _h in COLUMNS:
                 cells.append(Paragraph(_fmt_cell(k, d.get(k)), cell_style))
-            cells.append(Paragraph(_status_labels(d, cutoff_date, overdue_start, overdue_end), cell_style))
             table_data.append(cells)
             row_i += 1
         subtotal_text = (f"Sub Total ({union_label}) — Total Loans: {u_count} "
@@ -987,10 +963,9 @@ def _build_village_union_listing_table(rows, cutoff_date, overdue_start, overdue
     bg_cmds.append(("BACKGROUND", (0, row_i), (ncols - 1, row_i), colors.HexColor("#dfe6e9")))
 
     avail_width = page_w - 16 * mm
-    total_weight = _SL_WEIGHT + sum(_COLUMN_WEIGHTS.get(k, 1.0) for k, _ in COLUMNS) + 1.4
+    total_weight = _SL_WEIGHT + sum(_COLUMN_WEIGHTS.get(k, 1.0) for k, _ in COLUMNS)
     col_widths = [avail_width * _SL_WEIGHT / total_weight] + \
-                 [avail_width * _COLUMN_WEIGHTS.get(k, 1.0) / total_weight for k, _ in COLUMNS] + \
-                 [avail_width * 1.4 / total_weight]
+                 [avail_width * _COLUMN_WEIGHTS.get(k, 1.0) / total_weight for k, _ in COLUMNS]
 
     t = Table(table_data, colWidths=col_widths, repeatRows=1)
     base_style = [
@@ -1071,12 +1046,17 @@ def generate_overview_report_pdf(overview_data, out_path, branch_name,
         elements.append(Paragraph("Village/Union Wise", section_style))
         elements.append(_build_village_union_listing_table(
             overview_data.get("village_union_listing") or [],
-            overview_data.get("cutoff_date"), overview_data.get("overdue_start"),
-            overview_data.get("overdue_end"), page_w, cell_style, header_style, subtotal_para_style,
+            page_w, cell_style, header_style, subtotal_para_style,
         ))
         elements.append(Spacer(1, 10))
 
-    category_data = [(label, overview_data.get(key) or []) for key, label in OVERVIEW_SECTIONS]
+    dynamic_labels = {
+        "overdue": f"Overdue Loan ({ostart.strftime('%d/%m/%Y')} to {oend.strftime('%d/%m/%Y')})",
+        "expired": f"Expired Loan ({cutoff.strftime('%d/%m/%Y')})",
+        "rescheduled": "Rescheduled Loan",
+        "due": "Due Loan",
+    }
+    category_data = [(dynamic_labels[key], overview_data.get(key) or []) for key, _ in OVERVIEW_SECTIONS]
     elements.append(_build_combined_categories_table(
         category_data, page_w, cell_style, header_style, label_style, subtotal_para_style,
     ))
@@ -1092,10 +1072,10 @@ def generate_overview_excel(overview_data, out_path, show_village_union_listing=
     """overview_data: build_overview_report_data()-এর রেজাল্ট। প্রথমে "Overall Loan
     Information" (Union-ভিত্তিক সারাংশ, Grand Total সহ) ব্লক, তারপর
     (show_village_union_listing=True হলে) "Village/Union Wise" -- সব লোন Union→Village
-    অনুযায়ী সাজানো + Status কলাম (Expired/Rescheduled/Overdue/Due) + Union-ভিত্তিক
-    Sub Total ও Grand Total -- তারপর Overdue → Expired → Rescheduled → Due -- প্রতিটা
-    ফ্ল্যাট (Union-গ্রুপ ছাড়া, একটা আলাদা Union কলাম দিয়ে চেনা যাবে) ব্লক হিসেবে,
-    প্রতিটার আগে লেবেল রো + হেডার রো। ব্যাংকের নাম/লোগো/টাইটেল নেই।"""
+    অনুযায়ী সাজানো + Union-ভিত্তিক Sub Total ও Grand Total -- তারপর Overdue →
+    Expired → Rescheduled → Due -- প্রতিটা ফ্ল্যাট (Union-গ্রুপ ছাড়া, একটা আলাদা
+    Union কলাম দিয়ে চেনা যাবে) ব্লক হিসেবে, প্রতিটার আগে (Overdue/Expired-এর ক্ষেত্রে
+    তারিখসহ) লেবেল রো + হেডার রো। ব্যাংকের নাম/লোগো/টাইটেল নেই।"""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Overview Report"
@@ -1118,14 +1098,11 @@ def generate_overview_excel(overview_data, out_path, show_village_union_listing=
     r += 3
 
     if show_village_union_listing:
-        cutoff_date = overview_data.get("cutoff_date")
-        overdue_start = overview_data.get("overdue_start")
-        overdue_end = overview_data.get("overdue_end")
         listing = overview_data.get("village_union_listing") or []
 
         ws.cell(row=r, column=1, value="Village/Union Wise").font = Font(bold=True, size=13)
         r += 1
-        vu_header = ["Sl."] + [h for _, h in COLUMNS] + ["Status"]
+        vu_header = ["Sl."] + [h for _, h in COLUMNS]
         for idx, h in enumerate(vu_header, start=1):
             ws.cell(row=r, column=idx, value=h).font = Font(bold=True)
         r += 1
@@ -1136,8 +1113,7 @@ def generate_overview_excel(overview_data, out_path, show_village_union_listing=
         def _flush(union_label, u_rows):
             nonlocal r
             for i, d in enumerate(u_rows, start=1):
-                row_vals = ([i] + [_excel_cell(k, d.get(k)) for k, _ in COLUMNS] +
-                            [_status_labels(d, cutoff_date, overdue_start, overdue_end)])
+                row_vals = [i] + [_excel_cell(k, d.get(k)) for k, _ in COLUMNS]
                 for idx, v in enumerate(row_vals, start=1):
                     ws.cell(row=r, column=idx, value=v)
                 r += 1
@@ -1167,9 +1143,18 @@ def generate_overview_excel(overview_data, out_path, show_village_union_listing=
         grand_cell.font = Font(bold=True)
         r += 3
 
-    for key, label in OVERVIEW_SECTIONS:
+    cutoff = overview_data.get("cutoff_date")
+    ostart = overview_data.get("overdue_start")
+    oend = overview_data.get("overdue_end")
+    dynamic_labels = {
+        "overdue": f"Overdue Loan ({ostart.strftime('%d/%m/%Y')} to {oend.strftime('%d/%m/%Y')})",
+        "expired": f"Expired Loan ({cutoff.strftime('%d/%m/%Y')})",
+        "rescheduled": "Rescheduled Loan",
+        "due": "Due Loan",
+    }
+    for key, _label in OVERVIEW_SECTIONS:
         flat_rows = overview_data.get(key) or []
-        ws.cell(row=r, column=1, value=label).font = Font(bold=True, size=13)
+        ws.cell(row=r, column=1, value=dynamic_labels[key]).font = Font(bold=True, size=13)
         r += 1
 
         header = ["Sl."] + [h for _, h in COLUMNS] + ["Union"]
